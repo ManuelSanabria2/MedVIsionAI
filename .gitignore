@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data - No subir imágenes al repositorio
+data/raw/
+data/processed/
+data/annotations/
+
+# Models - Pesos entrenados
+models/
+checkpoints/
+*.pth
+*.pt
+*.onnx
+
+# MLflow
+mlruns/
+mlflow.db
+
+# Environment variables - NUNCA subir credenciales
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# MinIO data
+minio_data/
+
+# PostgreSQL data
+pg_data/

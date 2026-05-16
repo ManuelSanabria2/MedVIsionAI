@@ -1,0 +1,97 @@
+# ============================================================
+# MedVision AI - Docker Compose
+# Orquestación de servicios: App + PostgreSQL + MinIO + MLflow
+# ============================================================
+
+version: "3.9"
+
+services:
+  # --- Aplicación Principal ---
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: medvision-app
+    ports:
+      - "8000:8000"   # FastAPI
+      - "7860:7860"   # Gradio
+    environment:
+      - APP_ENV=development
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=medvision
+      - POSTGRES_USER=medvision_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-medvision_dev}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=medical-images
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - ./data:/app/data
+      - ./checkpoints:/app/checkpoints
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    restart: unless-stopped
+
+  # --- Base de Datos de Metadatos ---
+  postgres:
+    image: postgres:15-alpine
+    container_name: medvision-postgres
+    environment:
+      POSTGRES_DB: medvision
+      POSTGRES_USER: medvision_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-medvision_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medvision_user -d medvision"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- Almacenamiento de Imágenes (S3-compatible) ---
+  minio:
+    image: minio/minio:latest
+    container_name: medvision-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # Consola web
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  # --- Seguimiento de Experimentos ML ---
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.9.2
+    container_name: medvision-mlflow
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+    driver: local
+  minio_data:
+    driver: local
+  mlflow_data:
+    driver: local
