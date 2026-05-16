@@ -1,53 +1,113 @@
 # ============================================================
-# MedVision AI - Docker Compose
-# Orquestación de servicios: App + PostgreSQL + MinIO + MLflow
+# MedVision AI — Docker Compose
+# Servicios: API (GPU) + PostgreSQL + MinIO + MLflow
+# ============================================================
+# Levantar:   docker compose up -d
+# GPU:        docker compose --profile gpu up -d
+# Solo API:   docker compose up app -d
+# Logs:       docker compose logs -f app
+# Detener:    docker compose down
+# Limpiar:    docker compose down -v  (⚠️ elimina datos)
 # ============================================================
 
 version: "3.9"
 
+x-common-env: &common-env
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: medvision
+  POSTGRES_USER: medvision_user
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-medvision_dev_2024}
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-medvision_minio}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-medvision_minio_secret_2024}
+  MINIO_BUCKET: medical-images
+  MINIO_SECURE: "false"
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  MLFLOW_EXPERIMENT_NAME: medvision-detection
+  MODEL_PATH: checkpoints/best_model.pth
+  MODEL_ARCHITECTURE: efficientnet_b4
+  NUM_CLASSES: "2"
+  RANDOM_SEED: "42"
+
 services:
-  # --- Aplicación Principal ---
+  # ── Aplicación Principal (CPU) ──
   app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: medvision-app
     ports:
-      - "8000:8000"   # FastAPI
-      - "7860:7860"   # Gradio
+      - "${API_PORT:-8000}:8000"
+      - "${GRADIO_PORT:-7860}:7860"
     environment:
-      - APP_ENV=development
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=medvision
-      - POSTGRES_USER=medvision_user
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-medvision_dev}
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - MINIO_BUCKET=medical-images
-      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      <<: *common-env
+      APP_ENV: ${APP_ENV:-development}
+      CUDA_VISIBLE_DEVICES: ""
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:ro
       - ./checkpoints:/app/checkpoints
       - ./src:/app/src
+      - heatmaps_data:/app/static/heatmaps
     depends_on:
       postgres:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      mlflow:
         condition: service_started
     restart: unless-stopped
+    networks:
+      - medvision-net
 
-  # --- Base de Datos de Metadatos ---
+  # ── Aplicación con GPU (profile: gpu) ──
+  app-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: medvision-app-gpu
+    profiles:
+      - gpu
+    ports:
+      - "${API_PORT:-8000}:8000"
+      - "${GRADIO_PORT:-7860}:7860"
+    environment:
+      <<: *common-env
+      APP_ENV: ${APP_ENV:-development}
+    volumes:
+      - ./data:/app/data:ro
+      - ./checkpoints:/app/checkpoints
+      - ./src:/app/src
+      - heatmaps_data:/app/static/heatmaps
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - medvision-net
+
+  # ── Base de Datos de Metadatos ──
   postgres:
     image: postgres:15-alpine
     container_name: medvision-postgres
     environment:
       POSTGRES_DB: medvision
       POSTGRES_USER: medvision_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-medvision_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-medvision_dev_2024}
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -55,24 +115,56 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
     restart: unless-stopped
+    networks:
+      - medvision-net
 
-  # --- Almacenamiento de Imágenes (S3-compatible) ---
+  # ── Almacenamiento de Imágenes (S3-compatible) ──
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
     container_name: medvision-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-medvision_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-medvision_minio_secret_2024}
     ports:
-      - "9000:9000"   # API S3
-      - "9001:9001"   # Consola web
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
+    networks:
+      - medvision-net
 
-  # --- Seguimiento de Experimentos ML ---
+  # ── MinIO Bucket Init (one-shot) ──
+  minio-init:
+    image: minio/mc:RELEASE.2024-01-16T16-06-34Z
+    container_name: medvision-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set medvision http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
+      mc mb --ignore-existing medvision/medical-images;
+      mc mb --ignore-existing medvision/model-artifacts;
+      mc anonymous set download medvision/model-artifacts;
+      echo 'Buckets inicializados correctamente';
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-medvision_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-medvision_minio_secret_2024}
+    networks:
+      - medvision-net
+
+  # ── Seguimiento de Experimentos ML ──
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.9.2
     container_name: medvision-mlflow
@@ -80,18 +172,33 @@ services:
       mlflow server
       --host 0.0.0.0
       --port 5000
-      --backend-store-uri sqlite:///mlflow/mlflow.db
-      --default-artifact-root /mlflow/artifacts
+      --backend-store-uri postgresql://medvision_user:${POSTGRES_PASSWORD:-medvision_dev_2024}@postgres:5432/medvision
+      --default-artifact-root s3://model-artifacts
+      --serve-artifacts
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-medvision_minio}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-medvision_minio_secret_2024}
     ports:
-      - "5000:5000"
-    volumes:
-      - mlflow_data:/mlflow
+      - "${MLFLOW_PORT:-5000}:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     restart: unless-stopped
+    networks:
+      - medvision-net
 
 volumes:
   pg_data:
     driver: local
   minio_data:
     driver: local
-  mlflow_data:
+  heatmaps_data:
     driver: local
+
+networks:
+  medvision-net:
+    driver: bridge
+    name: medvision-network
