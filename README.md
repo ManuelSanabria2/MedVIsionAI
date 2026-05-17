@@ -1,167 +1,105 @@
-# MedVision AI 🏥🔬
+# 🏥 MedVision AI
 
-### Detección de Anomalías y Tumores en Imágenes Médicas
+![Status](https://img.shields.io/badge/Estado-Desarrollo-orange)
+![Tests](https://img.shields.io/badge/Tests-Pasando-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.1-ee4c2c)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-00a680)
 
-**Universidad Santo Tomás · Tunja, Boyacá · Ingeniería de Datos e Inteligencia Artificial**
+**Detección de Anomalías en Imágenes Médicas mediante Deep Learning**
+
+MedVision AI es un sistema de apoyo diagnóstico basado en Visión Artificial (EfficientNet-B4) diseñado para identificar patologías en imágenes radiográficas y archivos DICOM. El proyecto integra explicabilidad visual (Grad-CAM) para facilitar la adopción médica clínica, manteniendo estricto cumplimiento de privacidad de datos (Ley 1581).
+
+> **Aviso Académico/Clínico:** Este proyecto fue desarrollado con fines de investigación académica en la **Universidad Santo Tomás (Tunja, Boyacá)**. NO es un dispositivo médico certificado y NO debe utilizarse como único criterio diagnóstico.
 
 ---
 
-> ⚠️ **Disclaimer:** Este es un **prototipo de investigación académica**. NO es un dispositivo médico certificado ni ha sido evaluado por INVIMA. No debe usarse como único criterio diagnóstico.
+## 🎯 Objetivos del Sistema
+1. **Detección Precisa:** Clasificar imágenes médicas como "Normales" o "Con Anomalía" gestionando el desbalance de clases clínico.
+2. **Explicabilidad (XAI):** Ofrecer mapas de calor Grad-CAM que resalten la región de interés para el médico.
+3. **Producción MLOps:** Despliegue modular, empaquetado vía Docker, registro en PostgreSQL y monitoreo con MLflow.
 
-## 📋 Descripción
+---
 
-MedVision AI es un sistema de visión por computadora orientado al análisis automatizado de imágenes médicas, con foco en la **detección temprana de anomalías y tumores**. El sistema busca apoyar el diagnóstico clínico mediante modelos de inteligencia artificial, reduciendo tiempos de revisión y mejorando la precisión diagnóstica.
+## 🚀 Inicio Rápido (Quickstart)
 
-### Características Principales
-
-- 🔍 **Detección automatizada** de anomalías en imágenes médicas (DICOM, PNG, JPEG)
-- 🧠 **Deep Learning** con EfficientNet-B4 + transfer learning (PyTorch / MONAI)
-- 🗺️ **Explicabilidad** mediante Grad-CAM (mapas de calor sobre regiones relevantes)
-- 🌐 **API REST** con FastAPI para integración con sistemas clínicos
-- 🎛️ **Demo interactivo** con Gradio para validación rápida
-- 📊 **Tracking de experimentos** con MLflow
-- 🔒 **Cumplimiento normativo** colombiano (Ley 1581, consideraciones INVIMA)
-
-## 🛠️ Stack Tecnológico
-
-| Capa | Tecnología |
-|------|-----------|
-| Lenguaje | Python 3.10+ |
-| Framework ML | PyTorch + MONAI |
-| API Backend | FastAPI |
-| Imágenes DICOM | pydicom + SimpleITK |
-| Visualización | Gradio (demo) |
-| Base de datos | PostgreSQL + MinIO |
-| Contenedores | Docker + Docker Compose |
-| Tracking ML | MLflow |
-
-## 🚀 Instalación
-
-### Requisitos Previos
-
-- Python 3.10 o superior
-- Docker y Docker Compose (opcional, recomendado)
-- GPU NVIDIA con CUDA (opcional, mejora rendimiento)
-
-### Opción 1: Instalación Local
+Inicia el entorno de pruebas local en 3 comandos:
 
 ```bash
-# Clonar repositorio
-git clone https://github.com/tu-usuario/medvision-ai.git
-cd medvision-ai
+# 1. Ejecutar script de configuración inicial (crea .env, directorios y valida deps)
+./setup.sh --dev
 
-# Crear entorno virtual
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# .venv\Scripts\activate   # Windows
+# 2. Levantar la API en segundo plano
+python -m src.api.main &
 
-# Instalar dependencias
-pip install -r requirements.txt
+# 3. Lanzar la interfaz interactiva web
+python demo/app.py
+```
+*Gradio se ejecutará en `http://localhost:7860` y la API en `http://localhost:8000/docs`.*
 
-# Configurar variables de entorno
-cp .env.example .env
-# Editar .env con tus valores
+---
+
+## 🏗 Arquitectura del Sistema
+
+```text
+    [ Frontend / Cliente ]
+           │
+           ▼ (HTTP/REST)
+    ┌────────────────────────┐
+    │     FastAPI Server     │──(Logs)──▶ [ PostgreSQL ]
+    └──────────┬─────────────┘
+               │
+      ┌────────▼────────┐
+      │ MedVisionPredictor│◀──(Checkpoints)── [ MLflow Registry ]
+      └────────┬────────┘
+               │
+    ┌──────────▼───────────┐
+    │  DICOM Preprocessor  │ (Anonimización + Normalización)
+    └──────────┬───────────┘
+               │
+    ┌──────────▼───────────┐
+    │  EfficientNet-B4 CNN │ (Clasificación + Focal Loss)
+    └──────────┬───────────┘
+               │
+    ┌──────────▼───────────┐
+    │   Grad-CAM Module    │ (Mapas de calor explicativos)
+    └──────────────────────┘
 ```
 
-### Opción 2: Docker (Recomendado)
+---
 
+## 💻 Ejemplos de Uso (API REST)
+
+**1. Verificación de Salud:**
 ```bash
-# Clonar y configurar
-git clone https://github.com/tu-usuario/medvision-ai.git
-cd medvision-ai
-cp .env.example .env
-
-# Levantar todos los servicios
-docker-compose up -d
-
-# Verificar servicios
-docker-compose ps
+curl -X GET "http://localhost:8000/health"
 ```
 
-**Servicios disponibles:**
-
-| Servicio | URL |
-|----------|-----|
-| API FastAPI | http://localhost:8000 |
-| Swagger UI | http://localhost:8000/docs |
-| Gradio Demo | http://localhost:7860 |
-| MLflow UI | http://localhost:5000 |
-| MinIO Console | http://localhost:9001 |
-
-## 📁 Estructura del Proyecto
-
-```
-medvision-ai/
-├── data/
-│   ├── raw/                  # Imágenes originales (DICOM / PNG)
-│   ├── processed/            # Imágenes normalizadas
-│   └── annotations/          # Etiquetas y masks
-├── notebooks/
-│   ├── 01_eda.ipynb          # Análisis exploratorio
-│   ├── 02_preprocessing.ipynb
-│   └── 03_model_training.ipynb
-├── src/
-│   ├── data/                 # Carga y preprocesamiento
-│   ├── models/               # Arquitecturas de red neuronal
-│   ├── training/             # Entrenamiento y métricas
-│   ├── inference/            # Predicción y explicabilidad
-│   └── api/                  # Backend FastAPI
-├── tests/                    # Suite de tests
-├── docs/                     # Documentación técnica
-├── docker-compose.yml
-├── Dockerfile
-├── requirements.txt
-└── README.md
-```
-
-## 🧪 Uso
-
-### Ejecutar la API
-
+**2. Predicción de Anomalía:**
 ```bash
-uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+curl -X POST "http://localhost:8000/predict" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@/ruta/a/radiografia.dcm"
 ```
 
-### Ejecutar el Demo Gradio
-
-```bash
-python gradio_demo.py
+**Respuesta de Ejemplo:**
+```json
+{
+  "prediction_id": "8b3f4...2a1c",
+  "prediction": 1,
+  "class_detected": "anomalía",
+  "confidence": 0.94,
+  "gradcam_url": "/static/heatmaps/8b3f4.png",
+  "inference_time_ms": 115.3
+}
 ```
 
-### Ejecutar Tests
+---
 
-```bash
-pytest tests/ -v --cov=src --cov-report=term-missing
-```
+## 👥 Créditos
+Desarrollado en el marco del programa de Ingeniería de la **Universidad Santo Tomás · Tunja, Boyacá**.
+* **Investigador/Desarrollador Principal:** Manuel José Sanabria Gil
+* **Perfil:** Arquitectura de Software, MLOps e Inteligencia Artificial Médica.
 
-### Entrenar Modelo
-
-```bash
-python -m src.training.trainer --config config.yaml
-```
-
-## 📊 Métricas Objetivo
-
-| Métrica | Meta Mínima |
-|---------|-------------|
-| AUC-ROC | ≥ 0.85 |
-| Sensibilidad (Recall) | ≥ 0.80 |
-| F1-Score | ≥ 0.80 |
-
-## ⚖️ Consideraciones Éticas y Normativas
-
-- **Ley 1581 de 2012:** Datos médicos son datos sensibles. Requieren autorización del paciente y deben anonimizarse antes del entrenamiento.
-- **INVIMA:** En fase académica, el sistema se documenta como prototipo de investigación.
-- **Uso responsable:** El sistema es una herramienta de **apoyo al diagnóstico**, nunca un reemplazo del criterio médico profesional.
-
-## 📚 Referencias
-
-- [MONAI Framework](https://monai.io/)
-- Wang et al., 2017 — ChestX-ray8
-- Tan & Le, 2019 — EfficientNet
-- Selvaraju et al., 2017 — Grad-CAM
-- Lin et al., 2017 — Focal Loss
-
-## 📝 Licencia
-
-Proyecto académico — Universidad Santo Tomás, Tunja, Boyacá.
+Para consultar detalles técnicos avanzados, visita la carpeta `docs/`.

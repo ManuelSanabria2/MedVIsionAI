@@ -1,84 +1,45 @@
-# Consideraciones Normativas — MedVision AI
+# Cumplimiento Regulatorio y Normativo (MedVision AI)
 
-## Disclaimer
+El desarrollo e implementación de Inteligencia Artificial en el sector salud exige el cumplimiento de marcos legales estrictos relacionados con la privacidad del paciente y la seguridad de los dispositivos médicos.
 
-> ⚠️ **Este sistema es un prototipo de investigación académica** desarrollado en la Universidad Santo Tomás (Tunja, Boyacá) como parte del programa de Ingeniería de Datos e Inteligencia Artificial. **NO es un dispositivo médico certificado** y no ha sido evaluado ni aprobado por INVIMA ni ninguna otra entidad reguladora.
+## 1. Cumplimiento de la Ley 1581 de 2012 (Colombia)
 
----
+La Ley 1581 de 2012 dicta las disposiciones generales para la protección de datos personales. Las imágenes médicas y sus historiales clínicos asociados constituyen **Datos Sensibles**, cuyo tratamiento está sumamente restringido (Art. 5 y 6).
 
-## 1. Ley 1581 de 2012 — Protección de Datos Personales
+**Implementación en MedVision AI:**
+El sistema cumple estrictamente con el principio de minimizar la circulación de datos sensibles a través del componente `DICOMPreprocessor`:
+- Al momento en que un estudio (`.dcm`) toca el servidor, se activa un protocolo de sanitización "In-Memory".
+- Antes de que el tensor sea ingresado al modelo, o cualquier log sea guardado en la base de datos PostgreSQL, se ejecuta la limpieza obligatoria (Anonimización de Nivel de Campos).
+- Ningún dato con Información de Identificación Personal (PII) sale de la memoria volátil del servidor.
 
-### Aplicabilidad
+## 2. Protocolo de Anonimización de Datos
 
-Las imágenes médicas constituyen **datos sensibles** según la Ley 1581 de 2012. Su tratamiento está sujeto a:
+Para cumplir con la legislación, se eliminan permanentemente del header del DICOM las siguientes etiquetas principales antes del procesamiento:
 
-- **Autorización explícita** del titular (paciente) para recolección y tratamiento.
-- **Finalidad legítima** documentada (investigación académica).
-- **Principio de necesidad**: solo recolectar datos estrictamente necesarios.
+- `(0010, 0010)` **PatientName**: Nombre completo del paciente.
+- `(0010, 0020)` **PatientID**: Documento de identidad del paciente.
+- `(0010, 0030)` **PatientBirthDate**: Fecha de nacimiento.
+- `(0008, 0080)` **InstitutionName**: Nombre del hospital o clínica.
+- `(0008, 0090)` **ReferringPhysicianName**: Médico remitente.
+- Toda información en los metadatos resultante que es almacenada en el JSON de la API está confirmada por el flag `{"_anonymized": true}`.
 
-### Medidas Implementadas
+## 3. Posición frente a Regulación INVIMA (SaMD)
 
-| Medida | Implementación | Archivo |
-|--------|---------------|---------|
-| Anonimización DICOM | Eliminación automática de 20+ campos PII | `src/data/loader.py` |
-| Cifrado en tránsito | HTTPS obligatorio en producción | `docker-compose.yml` |
-| Variables de entorno | Credenciales sin hardcoding | `.env.example` |
-| .gitignore | Datos crudos excluidos del repositorio | `.gitignore` |
-| Acceso controlado | Autenticación de API (por implementar) | `src/api/main.py` |
+El Software como Dispositivo Médico (SaMD - *Software as a Medical Device*) agrupa a todo software concebido para propósitos médicos que cumpla sus tareas sin formar parte de un dispositivo médico de hardware (IMDRF, 2013). 
 
-### Campos DICOM Eliminados (PII)
+Según los marcos regulatorios internacionales (FDA en EE.UU., MDR en Europa) y las directrices locales del **INVIMA** (Instituto Nacional de Vigilancia de Medicamentos y Alimentos de Colombia):
 
-```python
-# Todos estos campos se eliminan automáticamente al cargar DICOM:
-- PatientName, PatientID, PatientBirthDate
-- PatientAddress, PatientTelephoneNumbers
-- InstitutionName, InstitutionAddress
-- ReferringPhysicianName, PerformingPhysicianName
-- OtherPatientIDs, OtherPatientNames
-- StudyID, AccessionNumber
-```
+> *Cualquier software que ayude al diagnóstico, cura, mitigación, tratamiento o prevención de enfermedades, entra en la categoría de Dispositivo Médico.*
 
----
+**Posición de MedVision AI:**
+1. El proyecto actual es un **Prototipo Académico Universitario** sin autorización sanitaria.
+2. **NO cuenta con Registro Sanitario del INVIMA.**
+3. Por lo tanto, legal y funcionalmente, **no se permite su comercialización ni su uso clínico autónomo** para dictar conductas terapéuticas sobre humanos vivos o cadáveres.
 
-## 2. INVIMA — Software como Dispositivo Médico (SaMD)
+## 4. Declaración de Limitaciones Clínicas
 
-### Clasificación
+Para salvaguardar la integridad de las prácticas de salud, MedVision AI expone de forma visible en todos sus componentes (Swagger de la API REST y frontend Gradio) la siguiente declaración clínica vinculante:
 
-Según lineamientos de INVIMA, el software que apoya decisiones clínicas puede clasificarse como **dispositivo médico** y requerir registro sanitario.
-
-### Nuestra Posición
-
-En la fase actual (académica/investigativa):
-
-1. El sistema se documenta como **prototipo de investigación**, no como dispositivo médico.
-2. Todos los endpoints de la API incluyen disclaimers claros.
-3. El sistema es una herramienta de **apoyo al diagnóstico**, nunca reemplazo del criterio médico.
-4. Se mantiene trazabilidad completa de datos, modelos y predicciones via MLflow.
-
-### Si se escala a uso clínico
-
-Se requeriría:
-- Evaluación y registro ante INVIMA como SaMD
-- Validación clínica con datos colombianos
-- Plan de gestión de riesgos (ISO 14971)
-- Sistema de calidad (ISO 13485)
-- Documentación técnica completa
-
----
-
-## 3. Consideraciones Éticas
-
-- **Nunca** usar el sistema como único criterio diagnóstico.
-- Documentar limitaciones del modelo: distribución de datos, sesgos, clases no cubiertas.
-- Registrar versiones del modelo con métricas reproducibles en MLflow.
-- Sesgo: validar rendimiento en subpoblaciones diversas.
-- Transparencia: Grad-CAM proporciona explicabilidad de las predicciones.
-
----
-
-## 4. Referencias Legales
-
-- [Ley 1581 de 2012](https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=49981) — Protección de Datos Personales
-- [INVIMA — Dispositivos Médicos](https://www.invima.gov.co/) — Regulación SaMD
-- Decreto 1377 de 2013 — Reglamentación de Ley 1581
-- Resolución 2154 de 2012 — Condiciones de procesamiento de datos de salud
+> ⚠️ **SISTEMA DE APOYO DIAGNÓSTICO (CADx)**: Esta herramienta está diseñada **únicamente para propósitos de demostración, educación e investigación en ingeniería**. Los resultados (mapas de calor y clases inferidas) operan como una "Segunda Opinión Sistémica" o un sistema de triaje inicial.
+> 
+> **NO REEMPLAZA EL CRITERIO CLÍNICO, RADIOLÓGICO O PATOLÓGICO DE UN PROFESIONAL HUMANO CERTIFICADO.** Toda anomalía detectada por este software exige verificación humana.
