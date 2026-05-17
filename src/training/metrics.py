@@ -1,117 +1,152 @@
 """
 metrics.py — Métricas de evaluación para detección médica.
 
-Implementa las métricas definidas en INSTRUCCIONS.MD:
-- Sensibilidad (Recall) — Meta: ≥ 0.80
-- Especificidad
-- AUC-ROC — Meta: ≥ 0.85
-- F1-Score
-- Exactitud (Accuracy)
-- Matriz de confusión
+Calcula métricas clínicas estándar definidas en INSTRUCCIONS.MD:
+- Sensibilidad (Recall) — Meta: ≥ 0.80 (minimizar falsos negativos)
+- Especificidad — Reducir falsas alarmas
+- AUC-ROC — Meta: ≥ 0.85 (rendimiento global)
+- F1-Score — Balance precisión/recall
+- Precisión, Accuracy, Matriz de confusión
+
+Universidad Santo Tomás · Tunja, Boyacá
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
 import numpy as np
 from sklearn.metrics import (
-    accuracy_score, f1_score, recall_score, precision_score,
-    roc_auc_score, confusion_matrix, classification_report,
+    accuracy_score,
+    auc,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
     roc_curve,
 )
 
 logger = logging.getLogger(__name__)
 
-# Metas mínimas del documento
+# Metas mínimas del documento INSTRUCCIONS.MD §6
 TARGET_AUC_ROC = 0.85
 TARGET_SENSITIVITY = 0.80
 
 
-class MetricsCalculator:
-    """Calcula y almacena métricas de evaluación médica.
+@dataclass
+class MetricResults:
+    """Contenedor tipado para resultados de métricas.
 
-    Uso:
-        >>> calc = MetricsCalculator(class_names=["normal", "anomalía"])
-        >>> metrics = calc.compute(y_true, y_pred, y_proba)
-        >>> calc.print_report()
+    Attributes:
+        accuracy: Exactitud global.
+        sensitivity: Sensibilidad / Recall (TP / (TP+FN)).
+        specificity: Especificidad (TN / (TN+FP)).
+        precision: Precisión (TP / (TP+FP)).
+        f1: F1-Score (2·P·R / (P+R)).
+        auc_roc: Área bajo la curva ROC.
+        confusion_matrix: Matriz de confusión [[TN,FP],[FN,TP]].
+        meets_targets: Si cumple metas mínimas del documento.
     """
 
-    def __init__(self, class_names: Optional[List[str]] = None):
-        self.class_names = class_names or ["normal", "anomalía"]
-        self.last_metrics = {}
+    accuracy: float = 0.0
+    sensitivity: float = 0.0
+    specificity: float = 0.0
+    precision: float = 0.0
+    f1: float = 0.0
+    auc_roc: float = 0.0
+    confusion_matrix: List[List[int]] = field(default_factory=lambda: [[0, 0], [0, 0]])
+    meets_targets: bool = False
 
-    def compute(
-        self,
-        y_true: np.ndarray,
-        y_pred: np.ndarray,
-        y_proba: Optional[np.ndarray] = None,
-    ) -> Dict[str, float]:
-        """Calcula todas las métricas.
-
-        Args:
-            y_true: Etiquetas reales (N,).
-            y_pred: Predicciones del modelo (N,).
-            y_proba: Probabilidades por clase (N, C) para AUC-ROC.
-
-        Returns:
-            Dict con todas las métricas calculadas.
-        """
-        metrics = {
-            "accuracy": accuracy_score(y_true, y_pred),
-            "sensitivity": recall_score(y_true, y_pred, average="binary", zero_division=0),
-            "precision": precision_score(y_true, y_pred, average="binary", zero_division=0),
-            "f1_score": f1_score(y_true, y_pred, average="binary", zero_division=0),
-            "specificity": self._specificity(y_true, y_pred),
+    def to_dict(self) -> Dict[str, float]:
+        """Convierte a dict plano (sin confusion_matrix) para MLflow logging."""
+        return {
+            "accuracy": self.accuracy,
+            "sensitivity": self.sensitivity,
+            "specificity": self.specificity,
+            "precision": self.precision,
+            "f1": self.f1,
+            "auc_roc": self.auc_roc,
         }
 
-        # AUC-ROC (requiere probabilidades)
-        if y_proba is not None:
-            try:
-                if y_proba.ndim == 2:
-                    auc = roc_auc_score(y_true, y_proba[:, 1])
-                else:
-                    auc = roc_auc_score(y_true, y_proba)
-                metrics["auc_roc"] = auc
-            except ValueError as e:
-                logger.warning("No se pudo calcular AUC-ROC: %s", e)
-                metrics["auc_roc"] = 0.0
 
-        # Matriz de confusión
-        metrics["confusion_matrix"] = confusion_matrix(y_true, y_pred).tolist()
+def compute_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_proba: Optional[np.ndarray] = None,
+) -> MetricResults:
+    """Calcula todas las métricas médicas.
 
-        # Verificar metas mínimas
-        metrics["meets_auc_target"] = metrics.get("auc_roc", 0) >= TARGET_AUC_ROC
-        metrics["meets_sensitivity_target"] = metrics["sensitivity"] >= TARGET_SENSITIVITY
+    Args:
+        y_true: Etiquetas reales (N,).
+        y_pred: Predicciones del modelo (N,).
+        y_proba: Probabilidades por clase (N, C) o (N,) para clase positiva.
 
-        self.last_metrics = metrics
-        return metrics
+    Returns:
+        MetricResults con todas las métricas calculadas.
+    """
+    results = MetricResults()
 
-    def _specificity(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        """Calcula especificidad: TN / (TN + FP)."""
-        cm = confusion_matrix(y_true, y_pred)
-        if cm.shape == (2, 2):
-            tn, fp = cm[0, 0], cm[0, 1]
-            return tn / (tn + fp) if (tn + fp) > 0 else 0.0
-        return 0.0
+    results.accuracy = float(accuracy_score(y_true, y_pred))
+    results.sensitivity = float(recall_score(y_true, y_pred, average="binary", zero_division=0))
+    results.precision = float(precision_score(y_true, y_pred, average="binary", zero_division=0))
+    results.f1 = float(f1_score(y_true, y_pred, average="binary", zero_division=0))
 
-    def print_report(self):
-        """Imprime reporte formateado de métricas."""
-        m = self.last_metrics
-        if not m:
-            logger.warning("No hay métricas. Ejecutar compute() primero.")
-            return
+    # Especificidad: TN / (TN + FP)
+    cm = confusion_matrix(y_true, y_pred)
+    results.confusion_matrix = cm.tolist()
+    if cm.shape == (2, 2):
+        tn, fp, fn, tp = cm.ravel()
+        results.specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
+    else:
+        results.specificity = 0.0
 
-        print("\n" + "=" * 50)
-        print("  REPORTE DE MÉTRICAS — MedVision AI")
-        print("=" * 50)
-        print(f"  Accuracy:      {m['accuracy']:.4f}")
-        print(f"  Sensibilidad:  {m['sensitivity']:.4f}  (meta: ≥{TARGET_SENSITIVITY})")
-        print(f"  Especificidad: {m['specificity']:.4f}")
-        print(f"  F1-Score:      {m['f1_score']:.4f}")
-        print(f"  Precisión:     {m['precision']:.4f}")
-        if "auc_roc" in m:
-            print(f"  AUC-ROC:       {m['auc_roc']:.4f}  (meta: ≥{TARGET_AUC_ROC})")
-        print("-" * 50)
-        status = "✅ CUMPLE" if m.get("meets_auc_target") and m.get("meets_sensitivity_target") else "❌ NO CUMPLE"
-        print(f"  Estado: {status} metas mínimas")
-        print("=" * 50 + "\n")
+    # AUC-ROC
+    if y_proba is not None:
+        try:
+            if y_proba.ndim == 2:
+                score = roc_auc_score(y_true, y_proba[:, 1])
+            else:
+                score = roc_auc_score(y_true, y_proba)
+            results.auc_roc = float(score)
+        except ValueError as e:
+            logger.warning("AUC-ROC no calculable: %s", e)
+            results.auc_roc = 0.0
+
+    # Verificar metas
+    results.meets_targets = (
+        results.auc_roc >= TARGET_AUC_ROC and results.sensitivity >= TARGET_SENSITIVITY
+    )
+
+    return results
+
+
+def format_metrics_report(results: MetricResults, epoch: Optional[int] = None) -> str:
+    """Formatea métricas como string para logging.
+
+    Args:
+        results: MetricResults calculados.
+        epoch: Número de época (opcional).
+
+    Returns:
+        String formateado con todas las métricas.
+    """
+    header = f"Epoch {epoch}" if epoch else "Evaluación"
+    status = "✅ CUMPLE" if results.meets_targets else "❌ NO CUMPLE"
+
+    lines = [
+        f"{'═' * 52}",
+        f"  {header} — Métricas MedVision AI",
+        f"{'═' * 52}",
+        f"  Accuracy:      {results.accuracy:.4f}",
+        f"  Sensibilidad:  {results.sensitivity:.4f}  (meta: ≥{TARGET_SENSITIVITY})",
+        f"  Especificidad: {results.specificity:.4f}",
+        f"  Precisión:     {results.precision:.4f}",
+        f"  F1-Score:      {results.f1:.4f}",
+        f"  AUC-ROC:       {results.auc_roc:.4f}  (meta: ≥{TARGET_AUC_ROC})",
+        f"{'─' * 52}",
+        f"  Confusion Matrix: {results.confusion_matrix}",
+        f"  Estado: {status}",
+        f"{'═' * 52}",
+    ]
+    return "\n".join(lines)

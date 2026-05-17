@@ -1,221 +1,288 @@
 """
-trainer.py — Loop de entrenamiento con MLflow tracking.
+trainer.py — Loop de entrenamiento con integración MLflow.
 
-Gestiona entrenamiento, validación, logging de métricas,
-y soporte para k-fold cross-validation.
-Seed fija (42) para reproducibilidad.
+Implementa `MedVisionTrainer` con:
+- Optimizador AdamW y scheduler CosineAnnealingLR
+- Entrenamiento GPU/CPU automático
+- Early Stopping basado en métricas
+- Logging automático de métricas e hiperparámetros a MLflow
+- Guardado de checkpoints
+- Registro del modelo final en MLflow Model Registry
+
+Universidad Santo Tomás · Tunja, Boyacá
 """
 
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-import numpy as np
+import mlflow
 import torch
 import torch.nn as nn
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.training.metrics import MetricsCalculator
-from src.training.callbacks import EarlyStopping, ModelCheckpoint, LearningRateScheduler
+from src.training.metrics import compute_metrics, format_metrics_report
 
 logger = logging.getLogger(__name__)
 
-RANDOM_SEED = 42
 
+class MedVisionTrainer:
+    """Entrenador principal para modelos de detección médica.
 
-def set_seed(seed: int = RANDOM_SEED):
-    """Fija seeds para reproducibilidad total."""
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-class Trainer:
-    """Entrenador para modelos de detección médica.
-
-    Integra: loop de entrenamiento, validación por época, early stopping,
-    checkpointing, LR scheduling y logging a MLflow.
+    Gestiona el ciclo de vida completo del entrenamiento, incluyendo
+    optimización, evaluación, logging con MLflow y early stopping.
 
     Args:
-        model: Modelo a entrenar (MedicalDetector).
-        criterion: Función de pérdida.
-        optimizer: Optimizador PyTorch.
-        device: 'cuda' o 'cpu'.
-        experiment_name: Nombre del experimento MLflow.
+        model: Modelo PyTorch (ej. AnomalyDetector).
+        train_loader: DataLoader de entrenamiento.
+        val_loader: DataLoader de validación.
+        criterion: Función de pérdida (ej. FocalLoss).
+        learning_rate: Tasa de aprendizaje inicial.
+        weight_decay: Weight decay para AdamW (default 1e-4).
+        num_epochs: Número máximo de épocas.
+        patience: Épocas sin mejora antes de early stopping (default 10).
+        device: Dispositivo ('cuda' o 'cpu'). Si es None, autodetecta.
+        checkpoint_dir: Directorio para guardar el mejor modelo.
+        experiment_name: Nombre del experimento en MLflow.
     """
 
     def __init__(
         self,
         model: nn.Module,
-        criterion: nn.Module,
-        optimizer: torch.optim.Optimizer,
-        device: Optional[str] = None,
-        experiment_name: str = "medvision-detection",
-    ):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = model.to(self.device)
-        self.criterion = criterion
-        self.optimizer = optimizer
-        self.experiment_name = experiment_name
-        self.metrics_calc = MetricsCalculator()
-
-        # Intentar inicializar MLflow
-        try:
-            import mlflow
-            mlflow.set_experiment(experiment_name)
-            self.mlflow = mlflow
-            logger.info("MLflow configurado: %s", experiment_name)
-        except ImportError:
-            self.mlflow = None
-            logger.warning("MLflow no disponible. Métricas solo en consola.")
-
-        set_seed()
-
-    def fit(
-        self,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        epochs: int = 50,
+        criterion: nn.Module,
+        learning_rate: float = 1e-4,
+        weight_decay: float = 1e-4,
+        num_epochs: int = 50,
         patience: int = 10,
+        device: Optional[str] = None,
         checkpoint_dir: str = "checkpoints",
-    ) -> Dict:
-        """Ejecuta el loop de entrenamiento completo.
+        experiment_name: str = "medvision-detection",
+    ) -> None:
+        # Configuración de dispositivo
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = model.to(self.device)
+        logger.info("Entrenando en dispositivo: %s", self.device)
 
-        Args:
-            train_loader: DataLoader de entrenamiento.
-            val_loader: DataLoader de validación.
-            epochs: Número máximo de épocas.
-            patience: Épocas para early stopping.
-            checkpoint_dir: Directorio para guardar modelos.
+        # Componentes del loop
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.criterion = criterion.to(self.device)
+        self.num_epochs = num_epochs
+
+        # Optimizador y Scheduler
+        self.optimizer = AdamW(
+            self.model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+        )
+        self.scheduler = CosineAnnealingLR(
+            self.optimizer,
+            T_max=num_epochs,
+            eta_min=learning_rate / 100,
+        )
+
+        # Early Stopping y Checkpoints
+        self.patience = patience
+        self.best_auc_roc = 0.0
+        self.epochs_without_improvement = 0
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.best_model_path = self.checkpoint_dir / "best_model.pth"
+
+        # MLflow
+        self.experiment_name = experiment_name
+        mlflow.set_experiment(self.experiment_name)
+
+    def train_epoch(self, epoch: int) -> float:
+        """Ejecuta una época de entrenamiento.
 
         Returns:
-            Dict con historial de entrenamiento.
+            Pérdida media de la época.
         """
-        early_stop = EarlyStopping(patience=patience, mode="min")
-        checkpoint = ModelCheckpoint(save_dir=checkpoint_dir, mode="min")
-        lr_sched = LearningRateScheduler(self.optimizer, scheduler_type="plateau")
-
-        history = {"train_loss": [], "val_loss": [], "val_metrics": []}
-
-        run_ctx = self.mlflow.start_run() if self.mlflow else _NullContext()
-
-        with run_ctx:
-            if self.mlflow:
-                self.mlflow.log_params({
-                    "epochs": epochs, "patience": patience,
-                    "optimizer": type(self.optimizer).__name__,
-                    "lr": self.optimizer.param_groups[0]["lr"],
-                    "device": self.device,
-                })
-
-            for epoch in range(1, epochs + 1):
-                # --- Entrenamiento ---
-                train_loss = self._train_epoch(train_loader, epoch)
-                history["train_loss"].append(train_loss)
-
-                # --- Validación ---
-                val_loss, val_metrics = self._validate_epoch(val_loader)
-                history["val_loss"].append(val_loss)
-                history["val_metrics"].append(val_metrics)
-
-                # Log
-                lr = lr_sched.get_lr()
-                logger.info(
-                    "Epoch %d/%d | train_loss=%.4f | val_loss=%.4f | AUC=%.4f | Sens=%.4f | lr=%.2e",
-                    epoch, epochs, train_loss, val_loss,
-                    val_metrics.get("auc_roc", 0), val_metrics.get("sensitivity", 0), lr,
-                )
-
-                if self.mlflow:
-                    self.mlflow.log_metrics({
-                        "train_loss": train_loss, "val_loss": val_loss,
-                        "val_auc_roc": val_metrics.get("auc_roc", 0),
-                        "val_sensitivity": val_metrics.get("sensitivity", 0),
-                        "val_f1": val_metrics.get("f1_score", 0),
-                        "learning_rate": lr,
-                    }, step=epoch)
-
-                # Checkpoint
-                checkpoint(val_loss, self.model, epoch, self.optimizer)
-
-                # LR scheduling
-                lr_sched.step(val_loss)
-
-                # Early stopping
-                if early_stop(val_loss):
-                    logger.info("Entrenamiento detenido en epoch %d", epoch)
-                    break
-
-            # Cargar mejor modelo
-            checkpoint.load_best(self.model, self.device)
-
-        return history
-
-    def _train_epoch(self, loader: DataLoader, epoch: int) -> float:
-        """Ejecuta una época de entrenamiento."""
         self.model.train()
-        total_loss = 0.0
-        n_batches = 0
+        running_loss = 0.0
+        num_batches = len(self.train_loader)
 
-        for images, labels in tqdm(loader, desc=f"Train Epoch {epoch}", leave=False):
-            images = images.to(self.device)
-            labels = labels.to(self.device)
+        pbar = tqdm(self.train_loader, desc=f"Train Epoch {epoch}/{self.num_epochs}")
+        for inputs, targets in pbar:
+            inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self.model(images)
-            loss = self.criterion(outputs, labels)
+
+            logits = self.model(inputs)
+            loss = self.criterion(logits, targets)
+
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
 
-            total_loss += loss.item()
-            n_batches += 1
+            running_loss += loss.item()
+            pbar.set_postfix({"loss": loss.item()})
 
-        return total_loss / max(n_batches, 1)
+        avg_loss = running_loss / num_batches
+        return avg_loss
 
-    @torch.no_grad()
-    def _validate_epoch(self, loader: DataLoader) -> Tuple[float, Dict]:
-        """Ejecuta validación y calcula métricas."""
+    def validate(self, epoch: int) -> Tuple[float, Dict[str, float]]:
+        """Ejecuta validación y calcula métricas.
+
+        Returns:
+            Tupla (val_loss_media, metric_results_dict).
+        """
         self.model.eval()
-        total_loss = 0.0
-        all_preds, all_labels, all_proba = [], [], []
+        running_loss = 0.0
+        all_targets = []
+        all_preds = []
+        all_probs = []
 
-        for images, labels in loader:
-            images = images.to(self.device)
-            labels = labels.to(self.device)
+        with torch.no_grad():
+            for inputs, targets in tqdm(self.val_loader, desc="Validating", leave=False):
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
 
-            outputs = self.model(images)
-            loss = self.criterion(outputs, labels)
-            total_loss += loss.item()
+                logits = self.model(inputs)
+                loss = self.criterion(logits, targets)
+                running_loss += loss.item()
 
-            proba = torch.softmax(outputs, dim=1)
-            preds = proba.argmax(dim=1)
+                probs = torch.softmax(logits, dim=1)
+                preds = torch.argmax(probs, dim=1)
 
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-            all_proba.extend(proba.cpu().numpy())
+                all_targets.extend(targets.cpu().numpy())
+                all_preds.extend(preds.cpu().numpy())
+                all_probs.extend(probs[:, 1].cpu().numpy())
 
-        avg_loss = total_loss / max(len(loader), 1)
-        metrics = self.metrics_calc.compute(
-            np.array(all_labels), np.array(all_preds), np.array(all_proba),
+        avg_loss = running_loss / len(self.val_loader)
+        
+        # Calcular métricas clínicas
+        metrics = compute_metrics(
+            y_true=torch.tensor(all_targets).numpy(),
+            y_pred=torch.tensor(all_preds).numpy(),
+            y_proba=torch.tensor(all_probs).numpy(),
         )
-        return avg_loss, metrics
 
-    @torch.no_grad()
-    def evaluate(self, test_loader: DataLoader) -> Dict:
-        """Evalúa el modelo en el set de test. Imprime reporte completo."""
-        _, metrics = self._validate_epoch(test_loader)
-        self.metrics_calc.print_report()
-        return metrics
+        # Mostrar reporte formateado
+        print("\n" + format_metrics_report(metrics, epoch))
 
+        return avg_loss, metrics.to_dict()
 
-class _NullContext:
-    """Context manager nulo para cuando MLflow no está disponible."""
-    def __enter__(self):
-        return self
-    def __exit__(self, *args):
-        pass
+    def train(self) -> None:
+        """Ciclo de entrenamiento completo con MLflow tracking."""
+        logger.info("Iniciando entrenamiento por %d épocas", self.num_epochs)
+
+        with mlflow.start_run() as run:
+            # 1. Log hiperparámetros
+            mlflow.log_params({
+                "model": self.model.__class__.__name__,
+                "epochs": self.num_epochs,
+                "learning_rate": self.optimizer.param_groups[0]["lr"],
+                "weight_decay": self.optimizer.param_groups[0]["weight_decay"],
+                "batch_size": self.train_loader.batch_size,
+                "optimizer": "AdamW",
+                "scheduler": "CosineAnnealingLR",
+                "loss": self.criterion.__class__.__name__,
+                "patience": self.patience,
+                "device": self.device,
+            })
+
+            start_time = time.time()
+
+            # 2. Loop principal
+            for epoch in range(1, self.num_epochs + 1):
+                # Entrenamiento
+                train_loss = self.train_epoch(epoch)
+                
+                # Validación
+                val_loss, val_metrics = self.validate(epoch)
+
+                # Scheduler step
+                self.scheduler.step()
+
+                # MLflow metrics logging
+                mlflow.log_metrics({
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "val_auc_roc": val_metrics["auc_roc"],
+                    "val_sensitivity": val_metrics["sensitivity"],
+                    "val_specificity": val_metrics["specificity"],
+                    "val_f1": val_metrics["f1"],
+                    "lr": self.optimizer.param_groups[0]["lr"],
+                }, step=epoch)
+
+                # 3. Early Stopping y Guardado del mejor modelo
+                current_auc = val_metrics["auc_roc"]
+                if current_auc > self.best_auc_roc:
+                    logger.info(
+                        "Mejora en AUC-ROC: %.4f -> %.4f. Guardando checkpoint.",
+                        self.best_auc_roc, current_auc
+                    )
+                    self.best_auc_roc = current_auc
+                    self.epochs_without_improvement = 0
+                    self._save_checkpoint(epoch, val_metrics)
+                else:
+                    self.epochs_without_improvement += 1
+                    logger.info(
+                        "Sin mejora. Patience: %d/%d",
+                        self.epochs_without_improvement, self.patience
+                    )
+
+                if self.epochs_without_improvement >= self.patience:
+                    logger.warning("Early stopping disparado en época %d", epoch)
+                    break
+
+            # 4. Finalización y Registro del modelo
+            total_time = (time.time() - start_time) / 60
+            logger.info("Entrenamiento finalizado en %.1f min.", total_time)
+            
+            # Registrar el modelo final en MLflow Registry
+            self._register_model(run.info.run_id)
+
+    def _save_checkpoint(self, epoch: int, metrics: Dict[str, float]) -> None:
+        """Guarda el estado del modelo y optimizador."""
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_state_dict": self.scheduler.state_dict(),
+            "best_auc_roc": self.best_auc_roc,
+            "metrics": metrics,
+        }
+        torch.save(checkpoint, self.best_model_path)
+        logger.debug("Checkpoint guardado en: %s", self.best_model_path)
+
+    def _register_model(self, run_id: str, model_name: str = "medvision-detector") -> None:
+        """Registra el modelo en MLflow Model Registry."""
+        try:
+            # Primero cargamos los mejores pesos
+            if self.best_model_path.exists():
+                checkpoint = torch.load(self.best_model_path, map_location=self.device)
+                self.model.load_state_dict(checkpoint["model_state_dict"])
+                logger.info("Mejores pesos cargados (AUC-ROC: %.4f)", checkpoint["best_auc_roc"])
+
+            # Definir input signature para MLflow
+            from mlflow.models.signature import infer_signature
+            
+            # Crear un ejemplo de entrada dummy (1, C, H, W)
+            # Asumimos in_channels de la conv inicial
+            in_channels = getattr(self.model, "in_channels", 1) 
+            dummy_input = torch.randn(1, in_channels, 224, 224).to(self.device)
+            dummy_output = self.model(dummy_input)
+            
+            signature = infer_signature(dummy_input.cpu().numpy(), dummy_output.cpu().detach().numpy())
+
+            # Loggear y registrar
+            mlflow.pytorch.log_model(
+                pytorch_model=self.model,
+                artifact_path="model",
+                signature=signature,
+                registered_model_name=model_name,
+            )
+            logger.info("Modelo registrado en MLflow Model Registry como '%s'", model_name)
+            
+        except Exception as e:
+            logger.error("Error registrando modelo en MLflow: %s", e)

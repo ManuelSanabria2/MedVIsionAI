@@ -1,17 +1,17 @@
 """
-Módulo de entrenamiento — Loop de entrenamiento, métricas y callbacks.
+Módulo de entrenamiento — Loop de optimización y evaluación.
 
-Gestiona el ciclo completo de entrenamiento con validación,
-registro en MLflow y checkpointing automático.
+Incluye el MedVisionTrainer con integración a MLflow, early stopping,
+y callbacks automáticos. También expone funciones de evaluación de
+métricas clínicas (AUC-ROC, Sensibilidad, etc.).
 """
 
-from src.training.trainer import Trainer
-from src.training.metrics import MetricsCalculator
-from src.training.callbacks import EarlyStopping, ModelCheckpoint
+from src.training.trainer import MedVisionTrainer
+from src.training.metrics import compute_metrics, format_metrics_report, MetricResults
 
 __all__ = [
-    "Trainer",
-    "MetricsCalculator",
-    "EarlyStopping",
-    "ModelCheckpoint",
+    "MedVisionTrainer",
+    "compute_metrics",
+    "format_metrics_report",
+    "MetricResults",
 ]
