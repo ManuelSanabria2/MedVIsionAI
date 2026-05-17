@@ -1,109 +1,73 @@
 """
-test_model.py — Tests del modelo de detección médica.
+test_model.py — Suite de pruebas para el modelo de predicción (EfficientNet).
 
-Verifica: creación de backbone, detector, forward pass, loss functions.
+Valida el forward pass, las dimensiones de los tensores de salida,
+extracción de la última capa convolucional para Grad-CAM y
+la serialización/deserialización de pesos (checkpoints).
 """
+
+import os
+import tempfile
 
 import pytest
 import torch
-import numpy as np
+import torch.nn as nn
 
-from src.models.backbone import create_backbone, SUPPORTED_BACKBONES
-from src.models.detector import MedicalDetector
-from src.models.loss import FocalLoss, WeightedCrossEntropy, get_loss_function
+from src.models.detector import AnomalyDetector
 
 
-class TestBackbone:
-    """Tests para el módulo backbone."""
-
-    def test_supported_backbones(self):
-        assert "efficientnet_b4" in SUPPORTED_BACKBONES
-        assert "resnet50" in SUPPORTED_BACKBONES
-        assert "densenet121" in SUPPORTED_BACKBONES
-
-    def test_unsupported_architecture(self):
-        with pytest.raises(ValueError, match="no soportada"):
-            create_backbone("invalid_arch")
-
-    def test_efficientnet_creation(self):
-        model = create_backbone("efficientnet_b4", pretrained=False, in_channels=1)
-        assert hasattr(model, "num_features")
-        assert model.num_features > 0
-
-    def test_resnet50_creation(self):
-        model = create_backbone("resnet50", pretrained=False, in_channels=1)
-        assert hasattr(model, "num_features")
-
-    def test_grayscale_adaptation(self):
-        model = create_backbone("efficientnet_b4", pretrained=False, in_channels=1)
-        x = torch.randn(2, 1, 224, 224)
-        out = model(x)
-        assert out.shape[0] == 2
+@pytest.fixture
+def detector():
+    """Fixture que retorna el modelo base (con pesos aleatorios para tests rápidos)."""
+    return AnomalyDetector(pretrained=False, in_channels=1)
 
 
-class TestMedicalDetector:
-    """Tests para MedicalDetector."""
-
-    def test_binary_classification(self):
-        model = MedicalDetector(
-            architecture="efficientnet_b4", num_classes=2,
-            pretrained=False, in_channels=1,
-        )
-        x = torch.randn(2, 1, 224, 224)
-        out = model(x)
-        assert out.shape == (2, 2)
-
-    def test_multiclass(self):
-        model = MedicalDetector(
-            architecture="efficientnet_b4", num_classes=3,
-            pretrained=False, in_channels=1,
-        )
-        x = torch.randn(2, 1, 224, 224)
-        out = model(x)
-        assert out.shape == (2, 3)
-
-    def test_predict_proba(self):
-        model = MedicalDetector(pretrained=False, in_channels=1)
-        x = torch.randn(1, 1, 224, 224)
-        proba = model.predict_proba(x)
-        assert proba.shape == (1, 2)
-        assert abs(proba.sum().item() - 1.0) < 1e-5  # Probabilities sum to 1
-
-    def test_get_feature_layer(self):
-        model = MedicalDetector(pretrained=False)
-        layer = model.get_feature_layer()
-        assert layer is not None
+def test_forward_pass_dimensions(detector):
+    """Prueba que el forward pass retorne las dimensiones correctas (B, 2)."""
+    batch_size = 4
+    # Tensor sintético: Batch=4, Channels=1, Height=224, Width=224
+    dummy_input = torch.randn(batch_size, 1, 224, 224)
+    
+    detector.eval()
+    with torch.no_grad():
+        output = detector(dummy_input)
+        
+    assert output.dim() == 2
+    assert output.size(0) == batch_size
+    assert output.size(1) == 2
 
 
-class TestLossFunctions:
-    """Tests para funciones de pérdida."""
+def test_gradcam_layer_access(detector):
+    """Verifica que el modelo exponga la última capa convolucional."""
+    last_conv = detector.get_last_conv_layer()
+    assert last_conv is not None
+    assert isinstance(last_conv, nn.Module)
 
-    def test_focal_loss_shape(self):
-        loss_fn = FocalLoss(gamma=2.0)
-        inputs = torch.randn(4, 2)
-        targets = torch.tensor([0, 1, 0, 1])
-        loss = loss_fn(inputs, targets)
-        assert loss.dim() == 0  # Scalar
 
-    def test_focal_loss_positive(self):
-        loss_fn = FocalLoss()
-        inputs = torch.randn(4, 2)
-        targets = torch.tensor([0, 1, 0, 1])
-        loss = loss_fn(inputs, targets)
-        assert loss.item() > 0
-
-    def test_weighted_ce(self):
-        loss_fn = WeightedCrossEntropy(class_weights=[0.3, 0.7])
-        inputs = torch.randn(4, 2)
-        targets = torch.tensor([0, 1, 0, 1])
-        loss = loss_fn(inputs, targets)
-        assert loss.item() > 0
-
-    def test_get_loss_function_factory(self):
-        assert isinstance(get_loss_function("focal"), FocalLoss)
-        assert isinstance(get_loss_function("ce"), torch.nn.CrossEntropyLoss)
-        assert isinstance(get_loss_function("weighted_ce"), WeightedCrossEntropy)
-
-    def test_get_loss_invalid(self):
-        with pytest.raises(ValueError):
-            get_loss_function("invalid")
+def test_checkpoint_save_load(detector):
+    """Prueba la serialización (guardado) y deserialización (carga)."""
+    fd, path = tempfile.mkstemp(suffix=".pth")
+    os.close(fd)
+    
+    try:
+        # 1. Modificar un peso ligeramente para comparar
+        with torch.no_grad():
+            detector.classifier[3].weight[0, 0] = 9.99
+            
+        # 2. Guardar estado
+        torch.save(detector.state_dict(), path)
+        
+        # 3. Crear modelo nuevo
+        new_detector = AnomalyDetector(pretrained=False, in_channels=1)
+        
+        # Asegurar que el nuevo es diferente
+        assert new_detector.classifier[3].weight[0, 0].item() != 9.99
+        
+        # 4. Cargar estado
+        new_detector.load_state_dict(torch.load(path))
+        
+        # 5. Verificar igualdad
+        assert new_detector.classifier[3].weight[0, 0].item() == pytest.approx(9.99)
+        
+    finally:
+        os.remove(path)
