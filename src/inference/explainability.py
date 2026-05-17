@@ -1,132 +1,164 @@
 """
-explainability.py — Grad-CAM para explicabilidad del modelo.
+explainability.py — Módulo de Explicabilidad (XAI) para imágenes médicas.
 
-Genera mapas de calor que muestran las regiones de la imagen
-que más influyeron en la predicción del modelo.
-Referencia: Selvaraju et al., 2017.
+Implementa Grad-CAM (Gradient-weighted Class Activation Mapping) para visualizar
+las regiones de la imagen que más contribuyeron a la decisión del modelo.
+Crucial para la validación clínica y generación de confianza médica.
+
+Referencia: Selvaraju et al., 2017 (ICCV)
+Universidad Santo Tomás · Tunja, Boyacá
 """
 
 import logging
 from typing import Optional, Tuple
 
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
 
 class GradCAM:
-    """Generador de mapas de calor Grad-CAM.
+    """Implementación de Grad-CAM para interpretabilidad médica.
 
-    Visualiza qué regiones de la imagen el modelo consideró más
-    relevantes para su predicción. Esencial para validación clínica.
+    Extrae activaciones y gradientes de la capa final convolucional
+    del modelo para generar mapas de calor explicativos.
 
     Args:
-        model: Modelo entrenado (MedicalDetector).
-        target_layer: Capa convolucional objetivo. Si None, usa get_feature_layer().
+        model: Modelo PyTorch (ej. AnomalyDetector).
+        target_layer: Capa convolucional objetivo. Si es None,
+                      intenta usar model.get_last_conv_layer().
     """
 
-    def __init__(self, model: nn.Module, target_layer: Optional[nn.Module] = None):
+    def __init__(self, model: nn.Module, target_layer: Optional[nn.Module] = None) -> None:
         self.model = model
         self.model.eval()
-
-        if target_layer is None and hasattr(model, "get_feature_layer"):
-            target_layer = model.get_feature_layer()
+        
         self.target_layer = target_layer
+        if self.target_layer is None and hasattr(self.model, "get_last_conv_layer"):
+            self.target_layer = self.model.get_last_conv_layer()
+            
+        if self.target_layer is None:
+            raise ValueError("Debe proporcionar target_layer o modelo con get_last_conv_layer()")
 
-        self.gradients = None
-        self.activations = None
+        self.activations: Optional[torch.Tensor] = None
+        self.gradients: Optional[torch.Tensor] = None
+        self._register_hooks()
+        logger.debug("Grad-CAM inicializado sobre capa: %s", self.target_layer.__class__.__name__)
 
-        # Registrar hooks
-        if self.target_layer is not None:
-            self.target_layer.register_forward_hook(self._save_activation)
-            self.target_layer.register_full_backward_hook(self._save_gradient)
+    def _register_hooks(self) -> None:
+        """Registra forward y backward hooks para capturar features y gradientes."""
+        def forward_hook(module: nn.Module, input: tuple, output: torch.Tensor) -> None:
+            self.activations = output
 
-    def _save_activation(self, module, input, output):
-        self.activations = output.detach()
+        def backward_hook(module: nn.Module, grad_input: tuple, grad_output: tuple) -> None:
+            self.gradients = grad_output[0]
 
-    def _save_gradient(self, module, grad_input, grad_output):
-        self.gradients = grad_output[0].detach()
+        self.target_layer.register_forward_hook(forward_hook)
+        # register_full_backward_hook es preferible en PyTorch moderno
+        self.target_layer.register_full_backward_hook(backward_hook)
 
-    def generate(
-        self,
-        image: torch.Tensor,
-        target_class: Optional[int] = None,
-    ) -> np.ndarray:
-        """Genera mapa de calor Grad-CAM para una imagen.
+    def generate_heatmap(self, input_tensor: torch.Tensor, target_class: int) -> np.ndarray:
+        """Genera el mapa de calor (activaciones) crudo.
 
         Args:
-            image: Tensor de entrada (1, C, H, W) o (C, H, W).
-            target_class: Clase objetivo. Si None, usa la predicción del modelo.
+            input_tensor: Tensor de entrada (1, C, H, W).
+            target_class: Índice de clase a explicar.
 
         Returns:
-            Mapa de calor numpy (H, W) normalizado [0, 1].
+            Numpy array 2D con los valores de activación espacial [0, 1].
+            
+        Raises:
+            RuntimeError: Si el modelo no puede procesar el tensor o generar gradientes.
         """
-        if image.dim() == 3:
-            image = image.unsqueeze(0)
+        if input_tensor.dim() != 4 or input_tensor.size(0) != 1:
+            raise ValueError(f"Grad-CAM espera un batch de tamaño 1 (1, C, H, W). Recibió {input_tensor.shape}")
 
-        image.requires_grad_(True)
-        output = self.model(image)
-
-        if target_class is None:
-            target_class = output.argmax(dim=1).item()
-
-        # Backward pass
         self.model.zero_grad()
-        target_score = output[0, target_class]
-        target_score.backward()
+        
+        # Forward pass
+        logits = self.model(input_tensor)
+        if logits.dim() == 2:
+            score = logits[0, target_class]
+        else:
+            score = logits[target_class]
 
-        if self.gradients is None or self.activations is None:
-            logger.warning("Grad-CAM: no se capturaron gradientes/activaciones")
-            return np.zeros((image.shape[2], image.shape[3]))
+        # Backward pass para calcular gradientes respecto a la clase objetivo
+        try:
+            score.backward(retain_graph=True)
+        except Exception as e:
+            raise RuntimeError(f"Error en backward pass. Asegúrese de que input_tensor requires_grad=True si es necesario. {e}")
 
-        # Pesos = promedio global de gradientes
-        weights = self.gradients.mean(dim=[2, 3], keepdim=True)
+        if self.activations is None or self.gradients is None:
+            raise RuntimeError("Los hooks no capturaron activaciones o gradientes.")
 
-        # Combinación ponderada de activaciones
-        cam = (weights * self.activations).sum(dim=1, keepdim=True)
-        cam = F.relu(cam)  # Solo regiones positivas
+        # Obtener gradientes y activaciones del tensor
+        gradients = self.gradients.cpu().data.numpy()[0]
+        activations = self.activations.cpu().data.numpy()[0]
 
-        # Redimensionar al tamaño de la imagen original
-        cam = F.interpolate(
-            cam, size=(image.shape[2], image.shape[3]),
-            mode="bilinear", align_corners=False,
-        )
-        cam = cam.squeeze().cpu().numpy()
+        # Global Average Pooling a los gradientes para obtener pesos
+        weights = np.mean(gradients, axis=(1, 2))
 
-        # Normalizar a [0, 1]
+        # Combinación lineal ponderada de los mapas de activación
+        cam = np.zeros(activations.shape[1:], dtype=np.float32)
+        for i, w in enumerate(weights):
+            cam += w * activations[i]
+
+        # ReLU para descartar influencia negativa y normalización min-max
+        cam = np.maximum(cam, 0)
+        
         if cam.max() > 0:
-            cam = (cam - cam.min()) / (cam.max() - cam.min())
-
+            cam = cam / cam.max()
+            
         return cam
 
-    def overlay(
-        self,
-        image: np.ndarray,
+    @staticmethod
+    def overlay_heatmap(
+        original_img: Union[np.ndarray, Image.Image],
         heatmap: np.ndarray,
-        alpha: float = 0.4,
-    ) -> np.ndarray:
-        """Superpone mapa de calor sobre la imagen original.
+        alpha: float = 0.5,
+        colormap: int = cv2.COLORMAP_JET
+    ) -> Tuple[Image.Image, np.ndarray]:
+        """Superpone el heatmap a la imagen original.
 
         Args:
-            image: Imagen original (H, W) o (H, W, 3), [0, 1].
-            heatmap: Mapa Grad-CAM (H, W), [0, 1].
-            alpha: Transparencia del heatmap (0=solo imagen, 1=solo heatmap).
+            original_img: Imagen original PIL o Numpy array (H, W) o (H, W, 3).
+            heatmap: Array 2D (activaciones Grad-CAM).
+            alpha: Opacidad del overlay de calor.
+            colormap: Colormap de OpenCV (default: JET).
 
         Returns:
-            Imagen con heatmap superpuesto (H, W, 3), [0, 1].
+            Tupla (Imagen compuesta PIL, heatmap_colorizado_numpy).
         """
-        import matplotlib.cm as cm
+        # Preparar imagen base a numpy BGR o RGB (para cv2)
+        if isinstance(original_img, Image.Image):
+            original_img = np.array(original_img.convert("RGB"))
+        elif original_img.ndim == 2:
+            original_img = cv2.cvtColor((original_img * 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
+        elif original_img.ndim == 3 and original_img.shape[2] == 1:
+            original_img = cv2.cvtColor((original_img * 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
+            
+        if original_img.dtype != np.uint8:
+            original_img = (np.clip(original_img, 0, 1) * 255).astype(np.uint8)
 
-        # Aplicar colormap al heatmap
-        colored = cm.jet(heatmap)[:, :, :3]  # RGB, sin alpha
+        h, w = original_img.shape[:2]
 
-        # Asegurar imagen en formato RGB
-        if image.ndim == 2:
-            image = np.stack([image] * 3, axis=-1)
+        # Redimensionar heatmap al tamaño de la imagen original
+        heatmap_resized = cv2.resize(heatmap, (w, h))
 
-        # Superposición
-        overlay = (1 - alpha) * image + alpha * colored
-        return np.clip(overlay, 0, 1)
+        # Aplicar colormap (cv2 devuelve BGR)
+        heatmap_color = cv2.applyColorMap(np.uint8(255 * heatmap_resized), colormap)
+        # Convertir a RGB
+        heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
+
+        # Superponer (alpha blending)
+        overlay = cv2.addWeighted(original_img, 1 - alpha, heatmap_color, alpha, 0)
+
+        return Image.fromarray(overlay), heatmap_resized
+
+
+# Alias para compatibilidad con código existente
+MedicalExplainability = GradCAM
