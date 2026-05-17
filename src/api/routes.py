@@ -1,147 +1,222 @@
 """
-routes.py — Endpoints REST de la API MedVision AI.
+routes.py — Definición de los endpoints de la API REST.
 
-Endpoints:
-    POST /predict — Subir imagen, retornar predicción + confianza
-    POST /explain — Predicción + mapa Grad-CAM
-    GET  /health  — Estado del servicio
-    GET  /model/info — Versión del modelo y métricas
+Implementa la lógica principal de predicción, feedback médico, y logging.
+Incluye manejo de rate limiting y validación de tipos MIME.
+
+Universidad Santo Tomás · Tunja, Boyacá
 """
 
-import io
 import logging
+import os
+import shutil
 import tempfile
-from pathlib import Path
-from typing import Optional
+import time
+import uuid
+from datetime import datetime
+from typing import Any, Dict
 
+import cv2
 import numpy as np
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from sqlalchemy.orm import Session
 
-from src.api.schemas import (
-    ErrorResponse, HealthResponse, ModelInfoResponse, PredictionResponse,
-)
+from src.api.database import PredictionLog, get_db
+from src.api.schemas import FeedbackRequest, HealthResponse, ModelInfoResponse, PredictionResponse
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
 
-# Referencia global al predictor (inyectada desde main.py)
+# --- Configuración de almacenamiento local ---
+HEATMAPS_DIR = Path("static/heatmaps") if "Path" in globals() else __import__("pathlib").Path("static/heatmaps")
+HEATMAPS_DIR.mkdir(parents=True, exist_ok=True)
+
+# --- Referencia global al predictor (se carga en main.py) ---
 _predictor = None
 
-
-def set_predictor(predictor):
-    """Inyecta la instancia del predictor en las rutas."""
+def get_predictor():
+    """Obtiene la instancia global del predictor."""
     global _predictor
-    _predictor = predictor
+    if _predictor is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Modelo no cargado. Verifique los logs del servidor."
+        )
+    return _predictor
+
+# --- Rate Limiter (En memoria para dev/prototipo) ---
+class RateLimiter:
+    def __init__(self, requests_per_minute: int = 100):
+        self.rate = requests_per_minute
+        self.ip_records: Dict[str, list] = {}
+
+    def __call__(self, request: Request):
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        
+        # Limpiar registros antiguos
+        if client_ip in self.ip_records:
+            self.ip_records[client_ip] = [t for t in self.ip_records[client_ip] if now - t < 60.0]
+        else:
+            self.ip_records[client_ip] = []
+            
+        if len(self.ip_records[client_ip]) >= self.rate:
+            logger.warning("Rate limit excedido para IP: %s", client_ip)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Límite de peticiones excedido (100/min)."
+            )
+            
+        self.ip_records[client_ip].append(now)
+
+rate_limit = RateLimiter(requests_per_minute=100)
 
 
-@router.get("/health", response_model=HealthResponse, tags=["Sistema"])
+# ==============================================================================
+# Endpoints
+# ==============================================================================
+
+@router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Verifica el estado del servicio y modelo."""
+    """Verifica el estado del servicio y la carga del modelo."""
+    global _predictor
     return HealthResponse(
         status="healthy",
-        model_loaded=_predictor is not None,
-        device=_predictor.device if _predictor else "N/A",
+        model_loaded=(_predictor is not None),
+        device=_predictor.device if _predictor else "unknown",
+        version="0.1.0"
     )
 
 
-@router.get("/model/info", response_model=ModelInfoResponse, tags=["Modelo"])
-async def model_info():
-    """Retorna información del modelo activo."""
-    if _predictor is None:
-        raise HTTPException(status_code=503, detail="Modelo no cargado")
-
+@router.get("/model/info", response_model=ModelInfoResponse)
+async def model_info(predictor = Depends(get_predictor)):
+    """Retorna información detallada sobre el modelo activo."""
+    info = predictor.model.get_model_info()
     return ModelInfoResponse(
-        architecture=_predictor.model.architecture,
-        num_classes=_predictor.model.num_classes,
-        class_names=_predictor.class_names,
-        confidence_threshold=_predictor.threshold,
+        architecture=info.get("backbone", "unknown"),
+        num_classes=info.get("num_classes", 2),
+        class_names=predictor.class_names,
+        training_date=datetime.now().strftime("%Y-%m-%d"), # En un caso real vendría del registro MLflow
+        metrics={"auc_roc_target": 0.85, "sensitivity_target": 0.80}
     )
 
 
-@router.post("/predict", response_model=PredictionResponse, tags=["Predicción"])
-async def predict(file: UploadFile = File(...)):
-    """Analiza una imagen médica y retorna la predicción.
-
-    Soporta formatos: DICOM (.dcm), PNG, JPEG.
-
-    Retorna: clase predicha, confianza, probabilidades por clase
-    y metadatos DICOM (si aplica, anonimizados).
+@router.post("/predict", response_model=PredictionResponse, dependencies=[Depends(rate_limit)])
+async def predict_image(
+    file: UploadFile = File(...),
+    predictor = Depends(get_predictor),
+    db: Session = Depends(get_db)
+):
     """
-    if _predictor is None:
-        raise HTTPException(status_code=503, detail="Modelo no cargado")
-
-    # Validar tipo de archivo
-    allowed = {".dcm", ".png", ".jpg", ".jpeg"}
-    suffix = Path(file.filename or "upload.png").suffix.lower()
-    if suffix not in allowed:
+    Analiza una imagen médica (DICOM, PNG, JPEG), detecta anomalías,
+    genera un mapa de calor Grad-CAM y registra el resultado.
+    """
+    # Validar formato
+    allowed_extensions = {".dcm", ".dicom", ".png", ".jpg", ".jpeg"}
+    ext = os.path.splitext(file.filename)[1].lower()
+    
+    if ext not in allowed_extensions:
         raise HTTPException(
-            status_code=400,
-            detail=f"Formato no soportado: {suffix}. Permitidos: {allowed}",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Formato no soportado: {ext}. Permitidos: {allowed_extensions}"
         )
 
-    # Guardar archivo temporal
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        content = await file.read()
-        tmp.write(content)
+    # Crear ID único
+    pred_id = str(uuid.uuid4())
+    start_time = time.time()
+    
+    # Guardar archivo temporalmente
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
 
     try:
-        result = _predictor.predict(tmp_path, generate_heatmap=False)
-        return PredictionResponse(
-            prediction=result["prediction"],
-            class_name=result["class_name"],
-            confidence=result["confidence"],
-            probabilities=result["probabilities"],
-            metadata=result.get("metadata", {}),
-        )
-    except Exception as e:
-        logger.error("Error en predicción: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
-
-
-@router.post("/explain", response_model=PredictionResponse, tags=["Explicabilidad"])
-async def explain(file: UploadFile = File(...)):
-    """Analiza imagen + genera mapa de calor Grad-CAM.
-
-    Retorna predicción con URL del heatmap superpuesto.
-    """
-    if _predictor is None:
-        raise HTTPException(status_code=503, detail="Modelo no cargado")
-
-    suffix = Path(file.filename or "upload.png").suffix.lower()
-
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        content = await file.read()
-        tmp.write(content)
-        tmp_path = tmp.name
-
-    try:
-        result = _predictor.predict(tmp_path, generate_heatmap=True)
-
-        # Guardar heatmap overlay
+        # Inferencia con Grad-CAM
+        result = predictor.predict(tmp_path, generate_heatmap=True)
+        
+        # Guardar heatmap si se generó
         heatmap_url = None
-        if "overlay" in result:
-            from PIL import Image
-            overlay = (result["overlay"] * 255).astype(np.uint8)
-            heatmap_img = Image.fromarray(overlay)
-            heatmap_path = Path("static/heatmaps") / f"heatmap_{Path(file.filename).stem}.png"
-            heatmap_path.parent.mkdir(parents=True, exist_ok=True)
-            heatmap_img.save(str(heatmap_path))
-            heatmap_url = f"/static/heatmaps/{heatmap_path.name}"
+        heatmap_db_path = None
+        if result["overlay"] is not None:
+            heatmap_filename = f"{pred_id}.png"
+            heatmap_path = HEATMAPS_DIR / heatmap_filename
+            # Convertir a BGR para guardar con cv2
+            cv2.imwrite(str(heatmap_path), cv2.cvtColor(result["overlay"], cv2.COLOR_RGB2BGR))
+            heatmap_url = f"/static/heatmaps/{heatmap_filename}"
+            heatmap_db_path = str(heatmap_path)
+            
+        inference_time = (time.time() - start_time) * 1000
+
+        # Loggear en PostgreSQL
+        if db is not None:
+            try:
+                log_entry = PredictionLog(
+                    id=pred_id,
+                    predicted_class=result["prediction"],
+                    confidence=result["confidence"],
+                    inference_time_ms=inference_time,
+                    heatmap_path=heatmap_db_path
+                )
+                db.add(log_entry)
+                db.commit()
+            except Exception as e:
+                logger.error("Error guardando log en BD: %s", e)
+                db.rollback()
 
         return PredictionResponse(
+            prediction_id=pred_id,
             prediction=result["prediction"],
-            class_name=result["class_name"],
+            class_detected=result["class_name"],
             confidence=result["confidence"],
-            probabilities=result["probabilities"],
-            metadata=result.get("metadata", {}),
-            heatmap_url=heatmap_url,
+            gradcam_url=heatmap_url,
+            inference_time_ms=inference_time,
+            metadata=result["metadata"]
         )
+
     except Exception as e:
-        logger.error("Error en explicabilidad: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Error durante la predicción: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error procesando la imagen: {str(e)}"
+        )
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        # Limpiar archivo temporal
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@router.post("/feedback", status_code=status.HTTP_200_OK, dependencies=[Depends(rate_limit)])
+async def submit_feedback(
+    feedback: FeedbackRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Recibe la corrección del especialista médico sobre una predicción.
+    Este feedback se almacena para futuros ciclos de re-entrenamiento (Active Learning).
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Base de datos no disponible para guardar feedback."
+        )
+        
+    log_entry = db.query(PredictionLog).filter(PredictionLog.id == feedback.prediction_id).first()
+    if not log_entry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ID de predicción no encontrado."
+        )
+        
+    try:
+        log_entry.corrected_class = feedback.correct_label
+        log_entry.clinical_notes = feedback.clinical_notes
+        log_entry.feedback_timestamp = datetime.utcnow()
+        db.commit()
+        return {"message": "Feedback registrado correctamente", "prediction_id": feedback.prediction_id}
+    except Exception as e:
+        db.rollback()
+        logger.error("Error guardando feedback: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno al registrar el feedback."
+        )

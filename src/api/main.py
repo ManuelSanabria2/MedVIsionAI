@@ -1,104 +1,116 @@
 """
-main.py — Aplicación FastAPI para MedVision AI.
+main.py — Punto de entrada para la API REST de MedVision AI.
 
-Servidor de API REST para análisis de imágenes médicas.
-Documentación automática Swagger en /docs.
+Configura la aplicación FastAPI, inicializa el CORS, monta recursos
+estáticos y carga el modelo en memoria durante el evento de inicio (startup).
 
-NOTA: Este es un prototipo de investigación académica,
-NO un dispositivo médico certificado por INVIMA.
+Universidad Santo Tomás · Tunja, Boyacá
 """
 
 import logging
 import os
-from pathlib import Path
+from contextlib import asynccontextmanager
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-load_dotenv()
+from src.api.routes import router
+import src.api.routes as routes_module
 
-# Configurar logging
+# --- Configuración de Logging ---
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# Crear app FastAPI
+# --- Configuración del Modelo ---
+MODEL_PATH = os.getenv("MODEL_PATH", "checkpoints/best_model.pth")
+USE_MLFLOW = os.getenv("USE_MLFLOW_MODEL", "false").lower() == "true"
+MLFLOW_MODEL_NAME = os.getenv("MLFLOW_MODEL_NAME", "medvision-detector")
+MLFLOW_STAGE = os.getenv("MLFLOW_STAGE", "Production")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Maneja el ciclo de vida de la aplicación (startup/shutdown)."""
+    logger.info("Iniciando API MedVision AI...")
+    
+    # 1. Cargar el predictor globalmente
+    from src.inference.predictor import MedVisionPredictor
+    
+    try:
+        if USE_MLFLOW:
+            logger.info("Intentando cargar modelo desde MLflow Registry: %s (Stage: %s)", MLFLOW_MODEL_NAME, MLFLOW_STAGE)
+            predictor = MedVisionPredictor.from_mlflow(model_name=MLFLOW_MODEL_NAME, stage=MLFLOW_STAGE)
+        else:
+            logger.info("Cargando modelo desde checkpoint local: %s", MODEL_PATH)
+            # Para evitar errores en desarrollo si no existe el archivo aún, lo ignoramos temporalmente 
+            # en un escenario real se detendría o se cargaría un fallback
+            if os.path.exists(MODEL_PATH):
+                predictor = MedVisionPredictor.from_checkpoint(MODEL_PATH)
+            else:
+                logger.warning("Checkpoint no encontrado en %s. Inicializando modelo aleatorio para debug.", MODEL_PATH)
+                from src.models.detector import AnomalyDetector
+                model = AnomalyDetector(pretrained=False, in_channels=1)
+                predictor = MedVisionPredictor(model=model)
+                
+        # Inyectar al módulo de rutas
+        routes_module._predictor = predictor
+        logger.info("Modelo cargado exitosamente. Dispositivo: %s", predictor.device)
+        
+    except Exception as e:
+        logger.error("Fallo crítico al cargar el modelo: %s", e)
+        # No matamos la app para que /health pueda reportar el estado degradado
+        routes_module._predictor = None
+
+    # Continuar ejecución
+    yield
+
+    # Shutdown
+    logger.info("Apagando API y liberando recursos...")
+    routes_module._predictor = None
+
+
+# --- Definición de la Aplicación (Swagger) ---
 app = FastAPI(
-    title="MedVision AI",
+    title="MedVision AI API",
     description=(
-        "API REST para detección de anomalías y tumores en imágenes médicas. "
-        "Universidad Santo Tomás · Tunja, Boyacá · Ingeniería de Datos e IA. "
-        "\n\n⚠️ **Prototipo de investigación** — No es un dispositivo médico certificado."
+        "API REST para la detección de anomalías en imágenes médicas (DICOM/PNG).\n\n"
+        "### Funcionalidades:\n"
+        "- **Inferencia**: Clasificación binaria (Normal/Anomalía)\n"
+        "- **XAI**: Mapas de calor (Grad-CAM) para interpretabilidad clínica\n"
+        "- **Feedback**: Sistema de recolección de correcciones médicas (Active Learning)\n\n"
+        "> ⚠️ **Aviso Clínico**: Este sistema es un prototipo de investigación académica "
+        "desarrollado en la Universidad Santo Tomás. **NO es un dispositivo médico certificado** "
+        "y no debe usarse como único criterio diagnóstico."
     ),
     version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    lifespan=lifespan,
+    contact={
+        "name": "Ingeniería de Datos e IA - Universidad Santo Tomás",
+        "url": "https://github.com/manue-usta/MedVisionAI",
+    }
 )
 
-# CORS
+# --- CORS (Desarrollo) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Restringir en producción
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Servir archivos estáticos (heatmaps)
-static_dir = Path("static/heatmaps")
-static_dir.mkdir(parents=True, exist_ok=True)
+# --- Montar estáticos (para los mapas de calor Grad-CAM) ---
+os.makedirs("static/heatmaps", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Carga el modelo al iniciar la aplicación."""
-    from src.api.routes import router, set_predictor
-
-    # Registrar rutas
-    app.include_router(router, prefix="", tags=["API"])
-
-    # Intentar cargar modelo si existe checkpoint
-    model_path = os.getenv("MODEL_PATH", "checkpoints/best_model.pth")
-    if Path(model_path).exists():
-        try:
-            from src.inference.predictor import MedicalPredictor
-            predictor = MedicalPredictor.from_checkpoint(
-                model_path,
-                architecture=os.getenv("MODEL_ARCHITECTURE", "efficientnet_b4"),
-                num_classes=int(os.getenv("NUM_CLASSES", "2")),
-            )
-            set_predictor(predictor)
-            logger.info("✅ Modelo cargado desde %s", model_path)
-        except Exception as e:
-            logger.warning("⚠️ No se pudo cargar modelo: %s", e)
-            logger.info("API disponible sin modelo. Entrena uno primero.")
-    else:
-        logger.info("⚠️ No se encontró checkpoint en %s. API sin modelo.", model_path)
-
-
-@app.get("/", tags=["Root"])
-async def root():
-    """Endpoint raíz con información del proyecto."""
-    return {
-        "project": "MedVision AI",
-        "description": "Detección de Anomalías y Tumores en Imágenes Médicas",
-        "institution": "Universidad Santo Tomás · Tunja, Boyacá",
-        "version": "0.1.0",
-        "docs": "/docs",
-        "disclaimer": "Prototipo de investigación académica. No es dispositivo médico certificado.",
-    }
-
+# --- Registrar Router ---
+app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "src.api.main:app",
-        host=os.getenv("API_HOST", "0.0.0.0"),
-        port=int(os.getenv("API_PORT", "8000")),
-        reload=True,
-    )
+    port = int(os.getenv("API_PORT", 8000))
+    uvicorn.run("src.api.main:app", host="0.0.0.0", port=port, reload=True)
