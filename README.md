@@ -1,4 +1,4 @@
-# 🏥 MedVision AI
+#  MedVision AI
 
 ![Status](https://img.shields.io/badge/Estado-Desarrollo-orange)
 ![Tests](https://img.shields.io/badge/Tests-Pasando-brightgreen)
@@ -14,14 +14,14 @@ MedVision AI es un sistema de apoyo diagnóstico basado en Visión Artificial (E
 
 ---
 
-## 🎯 Objetivos del Sistema
+##  Objetivos del Sistema
 1. **Detección Precisa:** Clasificar imágenes médicas como "Normales" o "Con Anomalía" gestionando el desbalance de clases clínico.
 2. **Explicabilidad (XAI):** Ofrecer mapas de calor Grad-CAM que resalten la región de interés para el médico.
 3. **Producción MLOps:** Despliegue modular, empaquetado vía Docker, registro en PostgreSQL y monitoreo con MLflow.
 
 ---
 
-## 🚀 Inicio Rápido (Quickstart)
+##  Inicio Rápido (Quickstart)
 
 Inicia el entorno de pruebas local en 3 comandos:
 
@@ -39,7 +39,7 @@ python demo/app.py
 
 ---
 
-## 🏗 Arquitectura del Sistema
+## Arquitectura del Sistema
 
 ```text
     [ Frontend / Cliente ]
@@ -68,7 +68,7 @@ python demo/app.py
 
 ---
 
-## 💻 Ejemplos de Uso (API REST)
+##  Ejemplos de Uso (API REST)
 
 **1. Verificación de Salud:**
 ```bash
@@ -97,7 +97,7 @@ curl -X POST "http://localhost:8000/predict" \
 
 ---
 
-## 👥 Créditos
+##  Créditos
 Desarrollado en el marco del programa de Ingeniería de la **Universidad Santo Tomás · Tunja, Boyacá**.
 * **Investigador/Desarrollador Principal:** Manuel José Sanabria Gil
 * **Perfil:** Arquitectura de Software, MLOps e Inteligencia Artificial Médica.
