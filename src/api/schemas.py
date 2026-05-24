@@ -8,7 +8,8 @@ con Swagger/OpenAPI.
 Universidad Santo Tomás · Tunja, Boyacá
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -69,3 +70,24 @@ class FeedbackRequest(BaseModel):
             }
         }
     )
+
+
+class PredictionLogItem(BaseModel):
+    """Esquema para representar una predicción individual guardada."""
+    id: str
+    timestamp: datetime
+    predicted_class: int
+    confidence: float
+    inference_time_ms: float
+    heatmap_path: Optional[str] = None
+    corrected_class: Optional[int] = None
+    clinical_notes: Optional[str] = None
+    feedback_timestamp: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PredictionsListResponse(BaseModel):
+    """Esquema para el listado de predicciones con totalizador."""
+    total: int
+    predictions: List[PredictionLogItem]

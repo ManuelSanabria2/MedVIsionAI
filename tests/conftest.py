@@ -34,6 +34,7 @@ def dummy_dicom_path():
     file_meta.MediaStorageSOPClassUID = UID('1.2.840.10008.5.1.4.1.1.1') # CR Image Storage
     file_meta.MediaStorageSOPInstanceUID = UID('1.2.3')
     file_meta.ImplementationClassUID = UID('1.2.3.4')
+    file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
     
     ds = FileDataset(path, {}, file_meta=file_meta, preamble=b"\0" * 128)
     

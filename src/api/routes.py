@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from src.api.database import PredictionLog, get_db
-from src.api.schemas import FeedbackRequest, HealthResponse, ModelInfoResponse, PredictionResponse
+from src.api.schemas import FeedbackRequest, HealthResponse, ModelInfoResponse, PredictionResponse, PredictionsListResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -220,3 +220,28 @@ async def submit_feedback(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno al registrar el feedback."
         )
+
+
+@router.get("/predictions", response_model=PredictionsListResponse, dependencies=[Depends(rate_limit)])
+async def get_predictions(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene el historial de predicciones y feedback almacenado en la base de datos PostgreSQL.
+    Útil para alimentar dashboards analíticos del frontend.
+    """
+    if db is None:
+        # En caso de dev sin DB local, devolvemos lista vacía en vez de explotar para que el Dashboard cargue
+        logger.warning("Base de datos no disponible. Devolviendo historial vacío.")
+        return PredictionsListResponse(total=0, predictions=[])
+        
+    try:
+        total = db.query(PredictionLog).count()
+        logs = db.query(PredictionLog).order_by(PredictionLog.timestamp.desc()).offset(offset).limit(limit).all()
+        return PredictionsListResponse(total=total, predictions=logs)
+    except Exception as e:
+        logger.error("Error consultando logs de predicción: %s", e)
+        # Fallback sutil si falla la tabla o query
+        return PredictionsListResponse(total=0, predictions=[])

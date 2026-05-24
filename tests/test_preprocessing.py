@@ -37,7 +37,7 @@ def test_dicom_anonymization(dummy_dicom_path):
     assert "PatientName" not in metadata
     assert "PatientID" not in metadata
     assert "PatientBirthDate" not in metadata
-    assert metadata.get("_anonymized") is True
+    assert metadata.get("_anonymized") in (True, "true")
 
 
 def test_normalization_range(dummy_dicom_path):

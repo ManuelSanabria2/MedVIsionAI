@@ -10,7 +10,7 @@ Universidad Santo Tomás · Tunja, Boyacá
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import cv2
 import numpy as np

@@ -52,7 +52,7 @@ def test_checkpoint_save_load(detector):
     try:
         # 1. Modificar un peso ligeramente para comparar
         with torch.no_grad():
-            detector.classifier[3].weight[0, 0] = 9.99
+            detector.classifier[1].weight[0, 0] = 9.99
             
         # 2. Guardar estado
         torch.save(detector.state_dict(), path)
@@ -61,13 +61,13 @@ def test_checkpoint_save_load(detector):
         new_detector = AnomalyDetector(pretrained=False, in_channels=1)
         
         # Asegurar que el nuevo es diferente
-        assert new_detector.classifier[3].weight[0, 0].item() != 9.99
+        assert new_detector.classifier[1].weight[0, 0].item() != 9.99
         
         # 4. Cargar estado
         new_detector.load_state_dict(torch.load(path))
         
         # 5. Verificar igualdad
-        assert new_detector.classifier[3].weight[0, 0].item() == pytest.approx(9.99)
+        assert new_detector.classifier[1].weight[0, 0].item() == pytest.approx(9.99)
         
     finally:
         os.remove(path)
