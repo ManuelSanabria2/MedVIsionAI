@@ -38,6 +38,12 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
   
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
+  const normalizedHeatmapUrl = heatmapUrl?.replace(/\\/g, '/').replace(/^static/, '/static');
+  const fullHeatmapUrl = normalizedHeatmapUrl
+    ? (normalizedHeatmapUrl.startsWith('http') || normalizedHeatmapUrl.startsWith('/api')
+      ? normalizedHeatmapUrl
+      : `/api${normalizedHeatmapUrl}`)
+    : null;
 
   // Manejar Zoom con scroll de ratón
   const handleWheel = (e: React.WheelEvent) => {
@@ -204,7 +210,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
             activeTool === 'move' ? 'cursor-grab active:cursor-grabbing' : 'cursor-crosshair'
           }`}
         >
-          {imageUrl ? (
+          {imageUrl || fullHeatmapUrl ? (
             <div
               style={{
                 transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
@@ -213,19 +219,21 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
               className="absolute w-full h-full flex items-center justify-center transition-transform duration-75 origin-center pointer-events-none"
             >
               {/* Imagen base */}
-              <img
-                ref={imageRef}
-                src={imageUrl}
-                alt="Radiografía base"
-                className="max-h-full max-w-full object-contain"
-              />
+              {imageUrl && (
+                <img
+                  ref={imageRef}
+                  src={imageUrl}
+                  alt="Radiografía base"
+                  className="max-h-full max-w-full object-contain"
+                />
+              )}
 
               {/* Overlay Grad-CAM */}
-              {heatmapUrl && showHeatmap && (
+              {fullHeatmapUrl && showHeatmap && (
                 <img
-                  src={heatmapUrl.startsWith('http') ? heatmapUrl : `/api${heatmapUrl}`}
+                  src={fullHeatmapUrl}
                   alt="Grad-CAM Overlay"
-                  className="absolute max-h-full max-w-full object-contain mix-blend-screen opacity-70 transition-opacity"
+                  className={`${imageUrl ? 'absolute' : ''} max-h-full max-w-full object-contain ${imageUrl ? 'opacity-85' : 'opacity-100'} transition-opacity`}
                 />
               )}
             </div>

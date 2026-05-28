@@ -72,9 +72,6 @@ def predict_image(image):
         labels = result["probabilities"]
         overlay = result.get("overlay")
 
-        if overlay is not None:
-            overlay = (overlay * 255).astype(np.uint8)
-
         return labels, overlay
     finally:
         Path(tmp_path).unlink(missing_ok=True)

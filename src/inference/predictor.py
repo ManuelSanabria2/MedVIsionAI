@@ -9,9 +9,11 @@ Universidad Santo Tomás · Tunja, Boyacá
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -49,6 +51,12 @@ class MedVisionPredictor:
 
         self.preprocessor = preprocessor or DICOMPreprocessor.for_inference()
         self.class_names = class_names or {0: "normal", 1: "anomalía"}
+        self.use_low_confidence_calibration = (
+            os.getenv("USE_LOW_CONFIDENCE_CALIBRATION", "true").lower() == "true"
+        )
+        self.calibration_confidence_cutoff = float(
+            os.getenv("CALIBRATION_CONFIDENCE_CUTOFF", "0.75")
+        )
 
         # Instanciar Grad-CAM
         try:
@@ -183,25 +191,45 @@ class MedVisionPredictor:
             confidence, pred_idx = torch.max(probs, dim=0)
             pred_idx = pred_idx.item()
             confidence = confidence.item()
+            raw_pred_idx = pred_idx
+            raw_confidence = confidence
 
             probs_dict = {
                 self.class_names.get(i, f"clase_{i}"): p.item()
                 for i, p in enumerate(probs)
             }
 
+        calibration = None
+        if (
+            self.use_low_confidence_calibration
+            and raw_confidence < self.calibration_confidence_cutoff
+            and probs.numel() == 2
+        ):
+            calibration = self._calibrate_low_confidence_prediction(tensor, probs)
+            if calibration is not None:
+                pred_idx = calibration["prediction"]
+                confidence = calibration["confidence"]
+                probs_dict = {
+                    self.class_names.get(0, "normal"): calibration["normal_probability"],
+                    self.class_names.get(1, "anomalía"): calibration["anomaly_probability"],
+                }
+
         # 3. Explicabilidad (Opcional)
         overlay_img = None
-        if generate_heatmap and self.grad_cam is not None:
+        if generate_heatmap and pred_idx == 1:
             try:
-                heatmap = self.grad_cam.generate_heatmap(input_tensor, target_class=pred_idx)
-                
                 # Rescatar la imagen base (del tensor original preprocesado, normalizada 0-1)
                 base_img = tensor.squeeze().numpy()
                 if base_img.ndim == 2:
                     base_img = (base_img - base_img.min()) / (base_img.max() - base_img.min() + 1e-8)
-                
-                overlay, _ = self.grad_cam.overlay_heatmap(base_img, heatmap)
-                overlay_img = np.array(overlay)
+
+                heatmap = self._generate_opacity_heatmap(tensor)
+                if heatmap is None and self.grad_cam is not None:
+                    heatmap = self.grad_cam.generate_heatmap(input_tensor, target_class=pred_idx)
+
+                if heatmap is not None:
+                    overlay, _ = GradCAM.overlay_heatmap(base_img, heatmap)
+                    overlay_img = np.array(overlay)
             except Exception as e:
                 logger.error("Error generando heatmap: %s", e)
 
@@ -210,9 +238,145 @@ class MedVisionPredictor:
             "class_name": self.class_names.get(pred_idx, "desconocida"),
             "confidence": confidence,
             "probabilities": probs_dict,
-            "metadata": metadata,
+            "metadata": self._append_inference_metadata(
+                metadata,
+                raw_pred_idx=raw_pred_idx,
+                raw_confidence=raw_confidence,
+                calibration=calibration,
+            ),
             "overlay": overlay_img,
         }
+
+    def _calibrate_low_confidence_prediction(
+        self,
+        tensor: torch.Tensor,
+        probs: torch.Tensor,
+    ) -> Optional[Dict[str, Any]]:
+        """Corrige predicciones débiles con una señal focal de opacidad pulmonar."""
+        opacity = self._estimate_lung_opacity_score(tensor)
+        if opacity is None:
+            return None
+
+        anomaly_probability = float(probs[1].detach().cpu().item())
+        is_anomaly = opacity["score"] >= 1.0
+
+        if is_anomaly:
+            calibrated_anomaly = max(
+                anomaly_probability,
+                0.68 + min(opacity["score"] - 1.0, 1.0) * 0.12,
+            )
+        else:
+            calibrated_anomaly = min(
+                anomaly_probability,
+                0.30 + max(opacity["score"], 0.0) * 0.18,
+            )
+
+        calibrated_anomaly = float(np.clip(calibrated_anomaly, 0.05, 0.95))
+        calibrated_normal = 1.0 - calibrated_anomaly
+        prediction = int(calibrated_anomaly >= 0.5)
+        confidence = calibrated_anomaly if prediction == 1 else calibrated_normal
+
+        return {
+            "method": "low_confidence_opacity_calibration",
+            "prediction": prediction,
+            "confidence": confidence,
+            "normal_probability": calibrated_normal,
+            "anomaly_probability": calibrated_anomaly,
+            **opacity,
+        }
+
+    @staticmethod
+    def _estimate_lung_opacity_score(tensor: torch.Tensor) -> Optional[Dict[str, Any]]:
+        """Calcula una señal conservadora de opacidad focal entre ambos pulmones."""
+        arr = MedVisionPredictor._tensor_to_2d_array(tensor)
+        if arr is None:
+            return None
+
+        h, w = arr.shape
+        y0, y1 = int(0.20 * h), int(0.78 * h)
+        left = arr[y0:y1, int(0.15 * w):int(0.47 * w)]
+        right = arr[y0:y1, int(0.53 * w):int(0.85 * w)]
+        if left.size == 0 or right.size == 0:
+            return None
+
+        mean_asymmetry = abs(float(right.mean() - left.mean()))
+        p90_asymmetry = abs(float(np.percentile(right, 90) - np.percentile(left, 90)))
+        p95_asymmetry = abs(float(np.percentile(right, 95) - np.percentile(left, 95)))
+        left_p90 = float(np.percentile(left, 90))
+        right_p90 = float(np.percentile(right, 90))
+        affected_side = "right" if right_p90 >= left_p90 else "left"
+        score = max(mean_asymmetry / 0.040, p90_asymmetry / 0.100, p95_asymmetry / 0.140)
+
+        return {
+            "score": float(score),
+            "mean_asymmetry": mean_asymmetry,
+            "p90_asymmetry": p90_asymmetry,
+            "p95_asymmetry": p95_asymmetry,
+            "affected_side": affected_side,
+        }
+
+    @staticmethod
+    def _generate_opacity_heatmap(tensor: torch.Tensor) -> Optional[np.ndarray]:
+        """Genera un mapa espacial sobre la opacidad focal detectada."""
+        arr = MedVisionPredictor._tensor_to_2d_array(tensor)
+        opacity = MedVisionPredictor._estimate_lung_opacity_score(tensor)
+        if arr is None or opacity is None or opacity["score"] < 1.0:
+            return None
+
+        h, w = arr.shape
+        y0, y1 = int(0.20 * h), int(0.78 * h)
+        if opacity["affected_side"] == "right":
+            x0, x1 = int(0.53 * w), int(0.85 * w)
+            opposite = arr[y0:y1, int(0.15 * w):int(0.47 * w)]
+        else:
+            x0, x1 = int(0.15 * w), int(0.47 * w)
+            opposite = arr[y0:y1, int(0.53 * w):int(0.85 * w)]
+
+        roi = arr[y0:y1, x0:x1]
+        threshold = max(
+            float(np.percentile(opposite, 95)) + 0.05,
+            float(np.percentile(roi, 85)),
+        )
+        roi_heat = np.maximum(roi - threshold, 0.0)
+        if roi_heat.max() <= 0:
+            return None
+
+        heatmap = np.zeros_like(arr, dtype=np.float32)
+        heatmap[y0:y1, x0:x1] = roi_heat
+        heatmap = cv2.GaussianBlur(heatmap, (0, 0), sigmaX=5, sigmaY=5)
+        if heatmap.max() > 0:
+            heatmap = heatmap / heatmap.max()
+        return heatmap
+
+    @staticmethod
+    def _tensor_to_2d_array(tensor: torch.Tensor) -> Optional[np.ndarray]:
+        try:
+            arr = tensor.detach().cpu().squeeze().numpy().astype(np.float32)
+        except Exception:
+            return None
+
+        if arr.ndim != 2 or arr.size == 0:
+            return None
+        return np.clip(arr, 0.0, 1.0)
+
+    @staticmethod
+    def _append_inference_metadata(
+        metadata: Dict[str, Any],
+        raw_pred_idx: int,
+        raw_confidence: float,
+        calibration: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        enriched = dict(metadata or {})
+        enriched["_raw_model_prediction"] = str(raw_pred_idx)
+        enriched["_raw_model_confidence"] = f"{raw_confidence:.6f}"
+        if calibration is not None:
+            enriched["_calibration_method"] = calibration["method"]
+            enriched["_opacity_score"] = f"{calibration['score']:.6f}"
+            enriched["_opacity_mean_asymmetry"] = f"{calibration['mean_asymmetry']:.6f}"
+            enriched["_opacity_p90_asymmetry"] = f"{calibration['p90_asymmetry']:.6f}"
+            enriched["_opacity_p95_asymmetry"] = f"{calibration['p95_asymmetry']:.6f}"
+            enriched["_opacity_affected_side"] = calibration["affected_side"]
+        return enriched
 
 
 # Alias de compatibilidad

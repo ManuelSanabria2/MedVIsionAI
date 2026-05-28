@@ -20,6 +20,7 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "medvision_dev_2024")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "medvision")
+DISABLE_DATABASE = os.getenv("DISABLE_DATABASE", "false").lower() == "true"
 
 DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
@@ -48,6 +49,9 @@ class PredictionLog(Base):
 
 # Crear Engine y SessionLocal
 try:
+    if DISABLE_DATABASE or not POSTGRES_HOST:
+        raise RuntimeError("Base de datos deshabilitada por configuración.")
+
     engine = create_engine(DATABASE_URL, pool_pre_ping=True)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     

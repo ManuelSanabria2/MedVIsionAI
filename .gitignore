@@ -26,7 +26,7 @@ data/processed/
 data/annotations/
 
 # Models - Pesos entrenados
-models/
+/models/
 checkpoints/
 *.pth
 *.pt
@@ -54,3 +54,9 @@ minio_data/
 
 # PostgreSQL data
 pg_data/
+
+# Generated heatmaps and scratch files
+static/heatmaps/
+radiografia_*.png
+scratch_test.py
+

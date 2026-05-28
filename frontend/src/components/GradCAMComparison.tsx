@@ -76,7 +76,12 @@ export const GradCAMComparison: React.FC<GradCAMComparisonProps> = ({
 
   // fallback para demo si no hay radiografía original disponible
   const demoOriginal = imageUrl || 'https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=400&auto=format&fit=crop';
-  const fullHeatmapUrl = heatmapUrl ? (heatmapUrl.startsWith('http') ? heatmapUrl : `/api${heatmapUrl}`) : demoOriginal;
+  const normalizedHeatmapUrl = heatmapUrl?.replace(/\\/g, '/').replace(/^static/, '/static');
+  const fullHeatmapUrl = normalizedHeatmapUrl
+    ? (normalizedHeatmapUrl.startsWith('http') || normalizedHeatmapUrl.startsWith('/api')
+      ? normalizedHeatmapUrl
+      : `/api${normalizedHeatmapUrl}`)
+    : demoOriginal;
 
   return (
     <div className="flex flex-col bg-white rounded-xl border border-brand-gray/15 p-5 shadow-sm dark:bg-primary dark:border-brand-gray/10 select-none">

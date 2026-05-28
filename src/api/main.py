@@ -94,17 +94,44 @@ app = FastAPI(
     }
 )
 
-# --- CORS (Desarrollo) ---
+# --- CORS (Seguridad Ley 1581 / HIPAA) ---
+_cors_raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000")
+CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restringir en producción
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
+logger.info("CORS configurado para orígenes: %s", CORS_ORIGINS)
 
 # --- Montar estáticos (para los mapas de calor Grad-CAM) ---
-os.makedirs("static/heatmaps", exist_ok=True)
+HEATMAP_DIR = os.path.join("static", "heatmaps")
+HEATMAP_MAX_AGE_HOURS = int(os.getenv("HEATMAP_MAX_AGE_HOURS", "72"))
+os.makedirs(HEATMAP_DIR, exist_ok=True)
+
+
+def _purge_old_heatmaps():
+    """Elimina mapas de calor con antigüedad superior a HEATMAP_MAX_AGE_HOURS."""
+    import time
+    now = time.time()
+    max_age_seconds = HEATMAP_MAX_AGE_HOURS * 3600
+    purged = 0
+    for fname in os.listdir(HEATMAP_DIR):
+        fpath = os.path.join(HEATMAP_DIR, fname)
+        if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > max_age_seconds:
+            try:
+                os.remove(fpath)
+                purged += 1
+            except OSError:
+                pass
+    if purged:
+        logger.info("Heatmap purge: eliminados %d archivos con antigüedad >%dh.", purged, HEATMAP_MAX_AGE_HOURS)
+
+
+_purge_old_heatmaps()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- Registrar Router ---

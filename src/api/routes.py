@@ -14,6 +14,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict
 
 import cv2
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # --- Configuración de almacenamiento local ---
-HEATMAPS_DIR = Path("static/heatmaps") if "Path" in globals() else __import__("pathlib").Path("static/heatmaps")
+HEATMAPS_DIR = Path("static/heatmaps")
 HEATMAPS_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Referencia global al predictor (se carga en main.py) ---
@@ -103,6 +104,7 @@ async def model_info(predictor = Depends(get_predictor)):
 
 @router.post("/predict", response_model=PredictionResponse, dependencies=[Depends(rate_limit)])
 async def predict_image(
+    request: Request,
     file: UploadFile = File(...),
     predictor = Depends(get_predictor),
     db: Session = Depends(get_db)
@@ -142,8 +144,8 @@ async def predict_image(
             heatmap_path = HEATMAPS_DIR / heatmap_filename
             # Convertir a BGR para guardar con cv2
             cv2.imwrite(str(heatmap_path), cv2.cvtColor(result["overlay"], cv2.COLOR_RGB2BGR))
-            heatmap_url = f"/static/heatmaps/{heatmap_filename}"
-            heatmap_db_path = str(heatmap_path)
+            heatmap_url = str(request.url_for("static", path=f"heatmaps/{heatmap_filename}"))
+            heatmap_db_path = heatmap_url
             
         inference_time = (time.time() - start_time) * 1000
 

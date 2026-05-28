@@ -44,8 +44,9 @@ export const GradCamViewer: FC<GradCamViewerProps> = ({
   };
 
   const getFullHeatmapUrl = (url: string) => {
-    // Si la URL es relativa, le concatenamos el backend proxy
-    return url.startsWith('http') ? url : `/api${url}`;
+    if (url.startsWith('http')) return url;
+    const normalized = url.replace(/\\/g, '/').replace(/^static/, '/static');
+    return normalized.startsWith('/api') ? normalized : `/api${normalized}`;
   };
 
   if (!heatmapUrl) {

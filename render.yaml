@@ -1,0 +1,38 @@
+services:
+  - type: web
+    runtime: docker
+    name: medvisionai-api
+    plan: starter
+    dockerfilePath: ./Dockerfile.render
+    dockerContext: .
+    envVars:
+      - key: MODEL_PATH
+        value: checkpoints/best_model.pth
+      - key: MODEL_URL
+        sync: false
+      - key: REQUIRE_MODEL
+        value: "true"
+      - key: USE_LOW_CONFIDENCE_CALIBRATION
+        value: "true"
+      - key: CORS_ORIGINS
+        value: https://medvisionai-web.onrender.com
+      - key: POSTGRES_HOST
+        value: ""
+      - key: DISABLE_DATABASE
+        value: "true"
+      - key: HEATMAP_MAX_AGE_HOURS
+        value: "24"
+
+  - type: web
+    runtime: static
+    name: medvisionai-web
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://medvisionai-api.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

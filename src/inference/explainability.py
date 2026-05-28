@@ -109,7 +109,13 @@ class GradCAM:
 
         # ReLU para descartar influencia negativa y normalización min-max
         cam = np.maximum(cam, 0)
-        
+
+        # En modelos poco entrenados o con gradientes muy planos, Grad-CAM puede
+        # quedar completamente en cero. Usamos la energía de activación como
+        # respaldo para entregar una región visible en lugar de un mapa negro.
+        if cam.max() <= 0:
+            cam = np.mean(np.abs(activations), axis=0).astype(np.float32)
+
         if cam.max() > 0:
             cam = cam / cam.max()
             

@@ -142,7 +142,7 @@ export const AnalysisDetailPage: FC = () => {
           <ImageViewerErrorBoundary>
             <GradCAMComparison
               imageUrl={null}
-              heatmapUrl={log.heatmap_path ? log.heatmap_path.replace('static', '/static') : null}
+              heatmapUrl={log.heatmap_path}
             />
           </ImageViewerErrorBoundary>
           <MetadataTable metadata={simulatedMetadata} />
