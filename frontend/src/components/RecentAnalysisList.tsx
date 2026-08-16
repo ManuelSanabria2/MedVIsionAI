@@ -17,7 +17,7 @@ export const RecentAnalysisList: React.FC<RecentAnalysisListProps> = ({
   const navigate = useNavigate();
 
   const handleRowClick = (id: string) => {
-    navigate(`/history/${id}`);
+    navigate(`/app/history/${id}`);
   };
 
   const getRecentItems = () => {

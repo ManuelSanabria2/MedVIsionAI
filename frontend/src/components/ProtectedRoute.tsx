@@ -85,7 +85,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 
           {/* Botón de Retorno */}
           <Link
-            to="/"
+            to="/app"
             className="w-full py-2 bg-brand-deep text-white hover:bg-brand-deep/95 border border-brand-gray/20 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer dark:bg-white dark:text-primary dark:hover:bg-white/90"
           >
             <ArrowLeft className="w-4 h-4" />

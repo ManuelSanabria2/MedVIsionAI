@@ -179,7 +179,7 @@ export const AnalysisTable: React.FC<AnalysisTableProps> = ({ predictions, isLoa
                 return (
                   <tr
                     key={item.id}
-                    onClick={() => navigate(`/history/${item.id}`)}
+                    onClick={() => navigate(`/app/history/${item.id}`)}
                     className={`hover:bg-brand-white/40 dark:hover:bg-white/5 transition-all cursor-pointer ${
                       isSelected ? 'bg-accent/5' : ''
                     }`}
@@ -227,7 +227,7 @@ export const AnalysisTable: React.FC<AnalysisTableProps> = ({ predictions, isLoa
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          navigate(`/history/${item.id}`);
+                          navigate(`/app/history/${item.id}`);
                         }}
                         className="p-1 text-brand-cyan hover:scale-110 transition-transform cursor-pointer"
                       >

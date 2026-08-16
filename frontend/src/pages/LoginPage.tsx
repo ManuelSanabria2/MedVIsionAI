@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { motion } from 'framer-motion';
-import { Activity, ShieldCheck, Lock, Mail, AlertCircle, Info, Heart } from 'lucide-react';
+import { ShieldCheck, Lock, Mail, AlertCircle, Info, Heart } from 'lucide-react';
 import { Button } from '../components/ui/Button';
+import { LogoMark } from '../components/brand/Logo';
 
 export const LoginPage: React.FC = () => {
   const { login, isAuthenticated } = useAuth();
@@ -17,7 +18,7 @@ export const LoginPage: React.FC = () => {
   const [showHelper, setShowHelper] = useState<boolean>(false);
 
   // Obtener la ruta a la que intentaba ingresar antes de ser redirigido
-  const from = (location.state as any)?.from?.pathname || '/';
+  const from = (location.state as any)?.from?.pathname || '/app';
 
   // Si ya está autenticado, redirigir inmediatamente
   useEffect(() => {
@@ -70,11 +71,11 @@ export const LoginPage: React.FC = () => {
       >
         {/* Cabecera del Portal */}
         <div className="text-center flex flex-col items-center">
-          <div className="p-3 bg-brand-cyan/15 rounded-2xl text-brand-cyan border border-brand-cyan/20 mb-3 shadow-[0_0_15px_rgba(0,194,203,0.15)]">
-            <Activity className="w-8 h-8 animate-pulse" />
+          <div className="p-3 bg-brand-deep rounded-2xl border border-brand-cyan/20 mb-3 shadow-[0_0_15px_rgba(0,194,203,0.15)] text-white">
+            <LogoMark size={34} />
           </div>
-          <h1 className="text-xl font-black text-brand-deep dark:text-white uppercase tracking-wider leading-none">
-            MedVision AI
+          <h1 className="text-xl font-black text-brand-deep dark:text-white tracking-tight leading-none">
+            Med<span className="text-brand-cyan">Vision</span> AI
           </h1>
           <span className="text-[10px] text-brand-gray tracking-widest uppercase font-bold mt-1">
             "Ver más. Detectar antes."

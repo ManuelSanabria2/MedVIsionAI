@@ -11,6 +11,15 @@
   --color-warning: #F59E0B;
   --color-danger: #EF4444;
   --color-neutral: #64748B;
+
+  /* Alias de marca (brand-*) — usados en toda la UI. Antes indefinidos: las
+     utilidades text-brand-* / bg-brand-* no producían color y la paleta se
+     apoyaba en herencia. Definidos aquí para una identidad consistente. */
+  --color-brand-deep: #0A2342;   /* navy — texto principal / superficies */
+  --color-brand-cyan: #00C2CB;   /* cian — acento diagnóstico */
+  --color-brand-gray: #64748B;   /* slate — texto secundario / etiquetas */
+  --color-brand-white: #F8FAFC;  /* niebla clínica — fondo de app */
+
   --font-sans: 'DM Sans', system-ui, sans-serif;
   --font-mono: 'DM Mono', monospace;
   --shadow-scan: 0 0 15px rgba(0, 194, 203, 0.25);
@@ -93,6 +102,54 @@ body {
   animation: scan 3.5s linear infinite;
   z-index: 10;
   pointer-events: none;
+}
+
+/* ── Landing / marketing surface ─────────────────────────────────────── */
+
+/* Retícula técnica de fondo (plano de imagen / visor) */
+.reticle-grid {
+  background-image:
+    linear-gradient(rgba(0, 194, 203, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 194, 203, 0.06) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+/* Bloom de heatmap Grad-CAM — pulso suave que "revela" la anomalía */
+@keyframes heatbloom {
+  0%, 100% { opacity: 0.55; transform: scale(0.92); }
+  50%      { opacity: 0.9;  transform: scale(1.05); }
+}
+.heat-bloom {
+  animation: heatbloom 4s ease-in-out infinite;
+  filter: blur(14px);
+}
+
+/* Barrido de escaneo diagonal para el visor del hero */
+@keyframes hero-scan {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  8%   { opacity: 1; }
+  92%  { opacity: 1; }
+  100% { transform: translateY(220%); opacity: 0; }
+}
+.hero-scan-line {
+  animation: hero-scan 4.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Reveal on scroll (progressive enhancement — visible por defecto sin JS) */
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+  will-change: opacity, transform;
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .heat-bloom, .hero-scan-line { animation: none; }
+  .reveal { opacity: 1; transform: none; transition: none; }
 }
 
 /* anomaly-highlight para resaltar zonas detectadas */

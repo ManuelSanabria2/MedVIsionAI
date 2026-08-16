@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { createBrowserRouter } from 'react-router-dom';
 import { AppLayout } from '../layouts/AppLayout';
 import { ProtectedRoute } from '../components/ProtectedRoute';
+import LandingPage from '../pages/LandingPage';
 
 // Lazy loading de páginas para un rendimiento clínico superior (LCP < 2.5s, chunks < 250KB)
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
@@ -25,6 +26,10 @@ const ClinicalLoader = () => (
 
 export const router = createBrowserRouter([
   {
+    path: '/',
+    element: <LandingPage />,
+  },
+  {
     path: '/login',
     element: (
       <Suspense fallback={<ClinicalLoader />}>
@@ -33,7 +38,7 @@ export const router = createBrowserRouter([
     ),
   },
   {
-    path: '/',
+    path: '/app',
     element: (
       <ProtectedRoute>
         <AppLayout />

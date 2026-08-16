@@ -112,7 +112,7 @@ export const AnalysisDetailPage: FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-brand-gray/10 pb-4 select-none">
         <div className="flex items-center gap-3">
           <Link
-            to="/history"
+            to="/app/history"
             className="p-2 bg-white hover:bg-brand-gray/10 rounded-lg text-brand-deep border border-brand-gray/10 dark:bg-primary dark:border-white/10 dark:text-white cursor-pointer"
           >
             <ArrowLeft className="w-4.5 h-4.5" />

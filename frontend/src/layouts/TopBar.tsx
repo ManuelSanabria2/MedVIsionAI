@@ -35,6 +35,7 @@ export const TopBar: React.FC = () => {
     }
 
     const routeNames: Record<string, string> = {
+      app: 'Panel de Control',
       analyze: 'Analizador Clínico',
       history: 'Historial de Estudios',
       models: 'Gestión de Modelos',
@@ -44,7 +45,7 @@ export const TopBar: React.FC = () => {
 
     return (
       <div className="flex items-center gap-1.5 font-sans text-xs">
-        <Link to="/" className="text-brand-gray hover:text-brand-deep dark:hover:text-white font-medium transition-all">
+        <Link to="/app" className="text-brand-gray hover:text-brand-deep dark:hover:text-white font-medium transition-all">
           MedVision AI
         </Link>
         {pathnames.map((value, index) => {

@@ -14,6 +14,7 @@ import {
   LogOut,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
+import { Logo } from '../components/brand/Logo';
 
 interface SidebarProps {
   isCollapsed: boolean;
@@ -26,12 +27,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, setIsCollapsed })
   const [modelStatus] = useState<'online' | 'offline'>('online');
 
   const menuItems = [
-    { name: 'Dashboard', path: '/', icon: Activity },
-    { name: 'Nueva Imagen', path: '/analyze', icon: UploadCloud },
-    { name: 'Historial', path: '/history', icon: Clock },
-    { name: 'Gestión de Modelos', path: '/models', icon: Cpu },
-    { name: 'Configuración', path: '/settings', icon: Settings },
-    { name: 'Ayuda / Normativa', path: '/help', icon: Shield },
+    { name: 'Dashboard', path: '/app', icon: Activity, end: true },
+    { name: 'Nueva Imagen', path: '/app/analyze', icon: UploadCloud, end: false },
+    { name: 'Historial', path: '/app/history', icon: Clock, end: false },
+    { name: 'Gestión de Modelos', path: '/app/models', icon: Cpu, end: false },
+    { name: 'Configuración', path: '/app/settings', icon: Settings, end: false },
+    { name: 'Ayuda / Normativa', path: '/app/help', icon: Shield, end: false },
   ];
 
   return (
@@ -50,21 +51,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, setIsCollapsed })
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
                 transition={{ duration: 0.15 }}
-                className="flex items-center gap-2"
               >
-                <div className="p-1 bg-accent/25 border border-accent/40 rounded text-accent">
-                  <Activity className="w-5 h-5" />
-                </div>
-                <span className="font-sans font-black text-sm tracking-wide">MEDVISION AI</span>
+                <Logo variant="full" size={26} className="text-white" />
               </motion.div>
             ) : (
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="p-1 bg-accent/25 border border-accent/40 rounded text-accent"
+                className="text-white"
               >
-                <Activity className="w-5 h-5" />
+                <Logo variant="mark" size={24} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -86,6 +83,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, setIsCollapsed })
             <NavLink
               key={item.path}
               to={item.path}
+              end={item.end}
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all select-none ${
                   isActive
