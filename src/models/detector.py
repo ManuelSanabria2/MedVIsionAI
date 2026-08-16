@@ -30,7 +30,56 @@ BACKBONE_FEATURES = {
     "efficientnet_b0": 1280,
     "resnet50": 2048,
     "densenet121": 1024,
+    "convnext_tiny": 768,
+    "vit_b_16": 768,
+    "swin_t": 768,
 }
+
+
+class _SwinFeatureMap(nn.Module):
+    """Adaptador para Swin Transformer.
+
+    `torchvision.swin_t(...).features` entrega el mapa en formato channels-last
+    (B, H, W, C). El detector (GAP + Grad-CAM) espera (B, C, H, W), así que
+    permutamos. Además expone el tensor espacial como salida directa para que
+    Grad-CAM pueda engancharse a este módulo.
+    """
+
+    def __init__(self, features: nn.Module) -> None:
+        super().__init__()
+        self.features = features
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)  # (B, H, W, C)
+        return x.permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
+
+
+class _ViTFeatureMap(nn.Module):
+    """Adaptador para Vision Transformer (ViT-B/16).
+
+    ViT produce una secuencia de tokens, no un mapa espacial. Replicamos el
+    pipeline de torchvision (conv_proj → tokens → class token → encoder),
+    descartamos el class token y re-formamos la secuencia de parches a una
+    rejilla (B, C, H', W'). Esto permite reutilizar el mismo GAP + Grad-CAM que
+    los backbones convolucionales.
+    """
+
+    def __init__(self, vit: nn.Module) -> None:
+        super().__init__()
+        self.vit = vit
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        n = x.shape[0]
+        # _process_input: conv_proj + flatten a (B, seq, hidden)
+        tokens = self.vit._process_input(x)
+        class_token = self.vit.class_token.expand(n, -1, -1)
+        tokens = torch.cat([class_token, tokens], dim=1)
+        encoded = self.vit.encoder(tokens)  # (B, 1 + seq, hidden)
+        patches = encoded[:, 1:, :]  # descartar class token → (B, seq, hidden)
+        hidden = patches.shape[2]
+        grid = int(round(patches.shape[1] ** 0.5))  # 196 → 14
+        # (B, seq, hidden) → (B, hidden, grid, grid)
+        return patches.permute(0, 2, 1).reshape(n, hidden, grid, grid).contiguous()
 
 
 class AnomalyDetector(nn.Module):
@@ -207,6 +256,33 @@ class AnomalyDetector(nn.Module):
             backbone = base.features
             num_features = BACKBONE_FEATURES[name]
 
+        elif name == "convnext_tiny":
+            weights = "IMAGENET1K_V1" if pretrained else None
+            base = models.convnext_tiny(weights=weights)
+            # Stem convolucional (patchify) = features[0][0]
+            if in_channels != 3:
+                self._adapt_first_conv(base.features[0][0], in_channels)
+            backbone = base.features  # ya es 4D (B, 768, 7, 7)
+            num_features = BACKBONE_FEATURES[name]
+
+        elif name == "swin_t":
+            weights = "IMAGENET1K_V1" if pretrained else None
+            base = models.swin_t(weights=weights)
+            # Patch-embed conv = features[0][0]
+            if in_channels != 3:
+                self._adapt_first_conv(base.features[0][0], in_channels)
+            backbone = _SwinFeatureMap(base.features)  # permuta a (B, C, H, W)
+            num_features = BACKBONE_FEATURES[name]
+
+        elif name == "vit_b_16":
+            weights = "IMAGENET1K_V1" if pretrained else None
+            base = models.vit_b_16(weights=weights)
+            # Proyección de parches = conv_proj (Conv2d 3→768)
+            if in_channels != 3:
+                self._adapt_first_conv(base.conv_proj, in_channels)
+            backbone = _ViTFeatureMap(base)  # secuencia → mapa espacial
+            num_features = BACKBONE_FEATURES[name]
+
         else:
             raise ValueError(
                 f"Backbone '{name}' no soportado. "
@@ -302,6 +378,12 @@ class AnomalyDetector(nn.Module):
             return self.backbone[-1]  # layer4
         elif self.backbone_name == "densenet121":
             return self.backbone.denseblock4
+        elif self.backbone_name == "convnext_tiny":
+            return self.backbone[-1]  # última etapa CNBlock
+        elif self.backbone_name in ("swin_t", "vit_b_16"):
+            # El backbone es el adaptador (_SwinFeatureMap / _ViTFeatureMap):
+            # su salida ya es el mapa espacial (B, C, H', W') que Grad-CAM usa.
+            return self.backbone
         raise ValueError(f"Grad-CAM no configurado para {self.backbone_name}")
 
     def get_last_feature_map(self) -> Optional[torch.Tensor]:

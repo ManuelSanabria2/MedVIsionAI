@@ -60,3 +60,6 @@ static/heatmaps/
 radiografia_*.png
 scratch_test.py
 
+
+# Knowledge graph output (generado)
+graphify-out/

@@ -20,6 +20,9 @@ SUPPORTED_BACKBONES = {
     "resnet50",
     "resnet101",
     "densenet121",
+    "convnext_tiny",
+    "vit_b_16",
+    "swin_t",
 }
 
 
@@ -70,6 +73,28 @@ def create_backbone(
             _adapt_first_conv(model.features.conv0, in_channels)
         num_features = model.classifier.in_features
         model.classifier = nn.Identity()
+
+    elif architecture == "convnext_tiny":
+        model = models.convnext_tiny(weights=weights)
+        if in_channels != 3:
+            _adapt_first_conv(model.features[0][0], in_channels)
+        # classifier = Sequential(LayerNorm2d, Flatten, Linear)
+        num_features = model.classifier[2].in_features
+        model.classifier = nn.Identity()
+
+    elif architecture == "swin_t":
+        model = models.swin_t(weights=weights)
+        if in_channels != 3:
+            _adapt_first_conv(model.features[0][0], in_channels)
+        num_features = model.head.in_features
+        model.head = nn.Identity()
+
+    elif architecture == "vit_b_16":
+        model = models.vit_b_16(weights=weights)
+        if in_channels != 3:
+            _adapt_first_conv(model.conv_proj, in_channels)
+        num_features = model.heads.head.in_features
+        model.heads = nn.Identity()
 
     # Congelar pesos si se solicita (transfer learning mode)
     if freeze_layers:
